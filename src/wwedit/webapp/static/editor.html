@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>wwedit タイムラインエディタ</title>
+<style>
+  :root { --bg:#1b1b1d; --panel:#232327; --line:#3a3a40; --accent:#4fc3f7; }
+  * { box-sizing: border-box; }
+  body { font-family:"Meiryo",system-ui,sans-serif; margin:0; background:var(--bg); color:#eee; overflow:hidden; }
+  #app { display:flex; flex-direction:column; height:100vh; }
+  header { padding:6px 12px; background:#111; display:flex; gap:8px; align-items:center; font-size:13px; flex:0 0 auto; }
+  header .sp { flex:1; }
+  button.t { background:#2c2c32; color:#ddd; border:1px solid var(--line); border-radius:4px; padding:4px 8px; cursor:pointer; font-size:12px; }
+  button.t.on { background:var(--accent); color:#012; border-color:var(--accent); }
+  #stage { display:flex; gap:8px; padding:8px; height:44vh; flex:0 0 auto; overflow:hidden; }
+  .vbox { display:flex; flex-direction:column; position:relative; }
+  .vbox .vl { font-size:11px; color:#9aa; padding:2px 0; }
+  video { background:#000; height:100%; max-width:46vw; object-fit:contain; }
+  #rcv { background:#000; height:100%; max-width:46vw; aspect-ratio:16/9; }
+  #subov { position:absolute; text-align:center; pointer-events:none; font-weight:bold; line-height:1.2;
+           white-space:pre-wrap; }
+  #side { flex:1; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px; font-size:13px; overflow:auto; }
+  #side h3 { margin:0 0 8px; color:var(--accent); font-size:13px; }
+  #side label { display:block; margin:6px 0 2px; color:#9aa; font-size:12px; }
+  #side input[type=text], #side select { width:100%; background:#2a2a2e; color:#fff; border:1px solid var(--line); padding:5px; border-radius:4px; }
+  #side .row { display:flex; gap:6px; }
+  #side .saved { color:#2d6; font-size:11px; }
+  #splitter { height:7px; background:#111; cursor:row-resize; flex:0 0 auto; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+  #splitter:hover { background:#2c2c32; }
+  #tlbar { display:flex; gap:6px; align-items:center; padding:4px 10px; background:#1d1d20; border-bottom:1px solid var(--line); flex:0 0 auto; }
+  #tlbar .bsep { width:1px; height:18px; background:var(--line); margin:0 4px; }
+  #tlbar input[type=range] { width:170px; }
+  #ticker { flex:1 1 auto; min-width:0; overflow:hidden; position:relative; height:24px; margin-left:8px; padding-left:8px; border-left:1px solid var(--line); }
+  #tickerInner { position:absolute; left:0; top:0; white-space:nowrap; line-height:24px; font-size:13px; will-change:transform; color:#fff; }
+  #tickerInner .tkc { color:#012; background:var(--accent); border-radius:3px; padding:0 3px; font-weight:bold; }
+  #tickerInner .tkp { color:#cfcfd6; } #tickerInner .tkf { color:#ffffff; }
+  #tickerInner span { margin:0 2px; }
+  #tlwrap { flex:1 1 auto; overflow-x:auto; overflow-y:hidden; background:#161618; position:relative; }
+  #tl { position:relative; height:100%; min-height:200px; }
+  .ruler { position:relative; height:20px; border-bottom:1px solid var(--line); color:#889; font-size:10px; }
+  .tick { position:absolute; top:0; height:20px; border-left:1px solid #2c2c32; padding-left:3px; }
+  .track { position:relative; height:34px; border-bottom:1px solid #242428; }
+  .tlabel { position:sticky; left:0; z-index:5; display:inline-block; width:54px; height:34px; line-height:34px; padding-left:6px;
+            background:#111; color:#9aa; font-size:11px; border-right:1px solid var(--line); }
+  .clip { position:absolute; top:4px; height:26px; border-radius:3px; font-size:11px; line-height:26px; padding:0 4px;
+          overflow:hidden; white-space:nowrap; cursor:pointer; border:1px solid rgba(0,0,0,.4); }
+  .keep { background:#27502f; color:#bfe; } .cut { background:#3a2326; color:#e99; background-image:repeating-linear-gradient(45deg,#3a2326,#3a2326 4px,#2c1a1c 4px,#2c1a1c 8px); }
+  .fr-static{background:#244;color:#bdd;} .fr-loading{background:#443a22;color:#eda;} .fr-pending{background:#3a2440;color:#dac;}
+  .sub { color:#012; font-weight:bold; border:1px solid rgba(0,0,0,.5); }
+  .clip.sel { outline:2px solid #fff; z-index:6; }
+  .chap { background:#2b3a55; color:#cdf; }
+  .post { background:#3a5530; color:#cfd; }
+  .bgm { background:#33304a; color:#bbd; }
+  #playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--accent); z-index:8; pointer-events:none; box-shadow:0 0 4px var(--accent); }
+  #playhead::before { content:""; position:absolute; top:0; left:-5px; border-left:6px solid transparent; border-right:6px solid transparent; border-top:8px solid var(--accent); }
+  #inmark,#outmark { position:absolute; top:0; bottom:0; width:2px; z-index:7; pointer-events:none; }
+  #inmark{background:#6f6;} #outmark{background:#f96;}
+  /* ソース映像上の crop(トリミング)bbox 重畳。実コンテンツ矩形基準。 */
+  #cropov { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
+  #cropbox { position:absolute; border:2px solid #ffb300; box-shadow:0 0 0 2000px rgba(0,0,0,.32); cursor:move; pointer-events:auto; }
+  #cropbox.full { border-style:dashed; box-shadow:none; }  /* 全画面=cropなし。角ドラッグでcrop作成可 */
+  #cropbox .gh { position:absolute; width:10px; height:10px; background:#ffb300; border:1px solid #222; }
+  #cropbox .gh.tl{left:-6px;top:-6px;cursor:nwse-resize;} #cropbox .gh.tr{right:-6px;top:-6px;cursor:nesw-resize;}
+  #cropbox .gh.bl{left:-6px;bottom:-6px;cursor:nesw-resize;} #cropbox .gh.br{right:-6px;bottom:-6px;cursor:nwse-resize;}
+  #cropbox .lbl { position:absolute; top:-18px; left:0; font-size:10px; color:#ffb300; background:rgba(0,0,0,.5); padding:0 3px; white-space:nowrap; }
+  .fr-static.adj,.adj { background:#3a2f12; color:#fc9; }
+  .clip.adj.hascrop { background:#6b4a00; color:#ffd; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <b>タイムラインエディタ</b>
+    <span id="meta" style="color:#9aa"></span>
+    <button class="t" id="mSrc">ソース</button>
+    <button class="t" id="mPrev">レンダ結果</button>
+    <button class="t on" id="mBoth">両方</button>
+    <span style="color:#667">|</span>
+    <button class="t" id="uBtn" title="Ctrl+Z">↶</button><button class="t" id="rBtn" title="Ctrl+Shift+Z">↷</button>
+    <span class="sp"></span>
+    <span style="color:#778;font-size:11px">J/K/L=逆停順 ・ ←→=1F ・ ↑↓=選択種別の区切り ・ I/O=in/out ・ Del=範囲カット ・ B=分割 ・ N=スナップ ・ 編集は即自動保存</span>
+  </header>
+  <div id="stage">
+    <div class="vbox" id="boxSrc"><div class="vl">入力（ソース）<span style="color:#667">／調整クリップのcrop枠を重畳・ドラッグで調整</span></div><video id="vid"></video><div id="cropov"></div></div>
+    <div class="vbox" id="boxPrev" style="display:none"><div class="vl">レンダリング結果（EDLからソース映像にframing/字幕をライブ合成・mp4不要）</div><canvas id="rcv"></canvas><div id="subov"></div></div>
+    <div id="side"><h3>選択なし</h3><div style="color:#778">字幕/シーン/章クリップをクリック＝編集（即自動保存）。Cutクリップ＝keep⇔カット。タイムラインクリック＝シーク。</div></div>
+  </div>
+  <div id="splitter"></div>
+  <div id="tlbar">
+    <span style="color:#9aa;font-size:11px">倍率</span>
+    <input type="range" id="zoom" min="1.5" max="60" step="0.5" value="7">
+    <span id="zlbl" style="color:#778;font-size:11px;width:54px"></span>
+    <span class="bsep"></span>
+    <button class="t on" id="snapBtn" title="編集点へ吸着（N）">🧲 スナップ</button>
+    <span class="bsep"></span>
+    <button class="t" id="addSub" title="再生ヘッド位置に字幕追加">＋字幕</button>
+    <button class="t" id="addChap" title="再生ヘッド位置に章追加">＋章</button>
+    <div id="ticker" title="再生に同期した文字起こし"><div id="tickerInner"></div></div>
+  </div>
+  <div id="tlwrap"><div id="tl">
+    <div class="ruler" id="ruler"></div>
+    <div id="tracks"></div>
+    <div id="playhead"></div><div id="inmark" style="display:none"></div><div id="outmark" style="display:none"></div>
+  </div></div>
+</div>
+<script>
+let PXPS = 7, D = null, mode = "src", inP = null, outP = null, dragging = false;
+let revRAF = null, fwdRAF = null, fwdRate = 1, revRate = 1, tickerLast = 0;
+let selKind = null, selIdx = null, undoStack = [], redoStack = [], saveTmr = null, snap = true;
+const vid = document.getElementById("vid"), rcv = document.getElementById("rcv");
+const $ = id => document.getElementById(id);
+const x2t = px => px / PXPS, t2x = t => t * PXPS;
+const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
+
+function src2out(t){ let acc=0; for(const r of D.kept_ranges){ if(t<r.start) return acc; if(t<=r.end) return acc+(t-r.start); acc+=r.end-r.start; } return acc; }
+function out2src(o){ let acc=0; for(const r of D.kept_ranges){ const len=r.end-r.start; if(o<=acc+len) return r.start+(o-acc); acc+=len; } return D?D.source.duration:0; }
+function inKept(t){ return D.kept_ranges.some(r=>t>=r.start-1e-3 && t<=r.end+1e-3); }
+function nextKeptStart(t){ for(const r of D.kept_ranges){ if(r.start>t-1e-3) return r.start; } return null; }
+function fmt(t){ if(t==null||isNaN(t))return"--:--"; const m=Math.floor(t/60),s=t%60; return `${String(m).padStart(2,"0")}:${s.toFixed(1).padStart(4,"0")}`; }
+
+// 二重枠（色文字→白枠→同色外枠）を text-shadow で近似。白を上(内側)、同色を下(外側)に重ねる。
+function dblShadow(color){
+  const W=[], C=[];
+  for(let a=0;a<360;a+=30){ const c=Math.cos(a*Math.PI/180), s=Math.sin(a*Math.PI/180);
+    W.push(`${(c*2).toFixed(1)}px ${(s*2).toFixed(1)}px 0 #fff`);
+    C.push(`${(c*4).toFixed(1)}px ${(s*4).toFixed(1)}px 0 ${color}`); }
+  return W.concat(C).join(",");
+}
+// 動画の「実コンテンツ矩形」（object-fit:contain のレターボックスを除いた領域）に字幕を配置
+function placeOverlay(ov, v){
+  if(!v.clientWidth||!v.clientHeight) return;
+  const ar = D.source.width/D.source.height, W=v.clientWidth, H=v.clientHeight, er=W/H;
+  let w,h; if(er>ar){ h=H; w=H*ar; } else { w=W; h=W/ar; }
+  const left=v.offsetLeft+(W-w)/2, top=v.offsetTop+(H-h)/2;
+  ov.style.left=(left+w*0.04)+"px"; ov.style.width=(w*0.92)+"px";
+  ov.style.top=(top+h*0.80)+"px"; ov.style.fontSize=(h*0.055)+"px";
+}
+
+// 単一クロック=ソース動画 vid。レンダ結果は vid のフレームから canvas へ動的合成（mp4不要）。
+function master(){ return vid; }
+function curSrcTime(){ return vid.currentTime||0; }
+function seekSrc(t){ t=clamp(t,0,D.source.duration); vid.currentTime=t; }
+function visibleVids(){ return [vid]; }
+
+async function load(){
+  D = await (await fetch("/api/timeline")).json();
+  D.framing.sort((a,b)=>a.start-b.start);
+  D.chapters.sort((a,b)=>a.start_at-b.start_at);
+  $("meta").textContent = `${D.recording_dir} ・ ${fmt(D.source.duration)} ・ ${D.subtitles.length}字幕 ・ ${D.framing.length}シーン ・ ${D.chapters.length}章`;
+  if(!vid.src) vid.src = D.source.url;  // レンダ結果は vid から動的合成（別mp4不要）
+  buildTimeline();
+}
+function setMode(m){
+  mode=m;
+  $("mSrc").classList.toggle("on",m==="src"); $("mPrev").classList.toggle("on",m==="prev"); $("mBoth").classList.toggle("on",m==="both");
+  $("boxSrc").style.display = (m==="prev")?"none":"flex";
+  $("boxPrev").style.display = (m==="src")?"none":"flex";
+}
+$("mSrc").onclick=()=>setMode("src"); $("mPrev").onclick=()=>setMode("prev"); $("mBoth").onclick=()=>setMode("both");
+vid.addEventListener("click",()=>{ vid.controls=!vid.controls; });
+// シーク/読込完了でフレームが確定したら、レンダ結果canvasを即再描画（前フレーム残りを防ぐ）
+["seeked","loadeddata"].forEach(ev=>vid.addEventListener(ev,()=>{
+  rcv._key=null; if(D && mode!=="src" && curSpeed()<2) renderResult(curSrcTime()); }));
+
+// 最小ズーム=スライダ左端。時間固定でなく「全体が表示幅の約半分に収まる」縮尺を動的算出。
+function minPXPS(){ const w=$("tlwrap").clientWidth||900; return Math.max(0.02, 0.5*w/(D.source.duration||1)); }
+function syncZoomRange(){ const mn=minPXPS(); const z=$("zoom"); z.min=mn.toFixed(3); z.step=((60-mn)/300).toFixed(3); PXPS=clamp(PXPS,mn,60); }
+function applyZoom(anchorT){
+  anchorT = anchorT==null?curSrcTime():anchorT;
+  buildTimeline(); $("zoom").value=PXPS; $("zlbl").textContent = PXPS.toFixed(2)+"px/s";
+  const wrap=$("tlwrap"); wrap.scrollLeft = (54+t2x(anchorT)) - wrap.clientWidth/2;
+}
+function setZoom(factor){ PXPS=clamp(PXPS*factor,minPXPS(),60); applyZoom(); }
+$("zoom").oninput=()=>{ PXPS=clamp(+$("zoom").value,minPXPS(),60); applyZoom(); };
+
+function buildTimeline(){
+  $("tl").style.width = (t2x(D.source.duration)+60)+"px";
+  let rh=""; const step = PXPS<4?60:PXPS<10?30:10;
+  for(let s=0;s<=D.source.duration;s+=step) rh+=`<span class="tick" style="left:${54+t2x(s)}px">${fmt(s)}</span>`;
+  $("ruler").innerHTML = rh;
+  const selc=(k,i)=> (selKind===k&&selIdx===i)?" sel":"";
+  const chEnd=i=> D.chapters[i+1]?D.chapters[i+1].start_at:D.source.duration;
+  const tracks = [
+    ["投稿", (D.post_units||[]).map((p,i)=>clip(p.start,p.end,"clip post"+selc("pu",i), `${p.title}（${p.n_ranges}区間/章${p.chapter_ids.length}）`, {pu:i,s0:p.start,s1:p.end}))],
+    ["章", D.chapters.map((c,i)=>clip(c.start_at,chEnd(i),"clip chap"+selc("ch",i),(c.chapter_title||c.section_title||"章")+(c.is_required?" ★":""), {ch:i,s0:c.start_at,s1:chEnd(i)}))],
+    ["Cut", D.segments.map(sg=>clip(sg.start,sg.end, sg.invalid?"clip cut":"clip keep", sg.invalid?"カット":"keep", {seg:sg.id,invalid:sg.invalid,s0:sg.start,s1:sg.end}))],
+    ["シーン", D.framing.map((f,i)=>clip(f.start,f.end,"clip fr-"+f.kind+selc("fr",i), f.kind+(f.loading_label?":"+f.loading_label:"")+(f.warning?" ⚠":""), {fr:i,s0:f.start,s1:f.end}))],
+    ["調整", D.framing.map((f,i)=>clip(f.start,f.end,"clip adj"+(f.bbox?" hascrop":"")+selc("fr",i), f.bbox?("crop "+f.bbox[2]+"×"+f.bbox[3]):"全画面", {adj:i,s0:f.start,s1:f.end}))],
+    ["字幕", D.subtitles.map(s=>subClip(s))],
+    ["BGM", D.bgm.map(b=>clip(b.start,b.end,"clip bgm",b.path||"BGM",{}))],
+  ];
+  $("tracks").innerHTML = tracks.map(([n,h])=>`<div class="track"><span class="tlabel">${n}</span>${h.join("")}</div>`).join("");
+  $("tracks").querySelectorAll("[data-seg]").forEach(el=>makeDraggable(el,{edges:true, bodyDrag:false,
+    onClick:()=>{ const old=el.dataset.invalid==="true"; editOp(`/api/segment/${el.dataset.seg}`, {invalid:old}, {invalid:!old}); },
+    onCommit:(a,b,oa,ob,zone)=>{ const url=`/api/segment/${el.dataset.seg}`;
+      if(zone==="l") editOp(url,{start:oa},{start:a}); else editOp(url,{end:ob},{end:b}); }}));
+  // クリック時シーク可否: 既に選択中の同一項目を再クリックした場合はシークしない（冒頭に飛ばさない）
+  const clickSeek=(k,i)=> selKind!==k || selIdx!==i;
+  $("tracks").querySelectorAll("[data-sub]").forEach(el=>makeDraggable(el,{edges:true,
+    onClick:()=>selectSub(+el.dataset.sub, clickSeek("sub",+el.dataset.sub)), onCommit:(a,b,oa,ob)=>editOp(`/api/subtitle/${el.dataset.sub}`,{start:oa,end:ob},{start:a,end:b})}));
+  $("tracks").querySelectorAll("[data-fr]").forEach(el=>makeDraggable(el,{edges:true,
+    onClick:()=>selectFraming(+el.dataset.fr, clickSeek("fr",+el.dataset.fr)), onCommit:(a,b,oa,ob)=>editOp(`/api/framing/${el.dataset.fr}`,{start:oa,end:ob},{start:a,end:b})}));
+  $("tracks").querySelectorAll("[data-adj]").forEach(el=>el.onclick=()=>selectFraming(+el.dataset.adj, clickSeek("fr",+el.dataset.adj)));
+  // 投稿/章は常にシークしない（タップで冒頭に飛ばさない）
+  $("tracks").querySelectorAll("[data-ch]").forEach(el=>makeDraggable(el,{edges:false,
+    onClick:()=>selectChapter(+el.dataset.ch, false), onCommit:(a,b,oa)=>editOp(`/api/chapter/${el.dataset.ch}`,{start_at:oa},{start_at:a})}));
+  $("tracks").querySelectorAll("[data-pu]").forEach(el=>el.onclick=()=>selectPostUnit(+el.dataset.pu, false));
+}
+const pxs=(a,b)=>`left:${54+t2x(a)}px; width:${Math.max(2,t2x(b-a))}px;`;
+function clip(a,b,cls,label,data){ const d=Object.entries(data).map(([k,v])=>`data-${k}="${v}"`).join(" ");
+  return `<div class="${cls}" style="${pxs(a,b)}" ${d} title="${label} ${fmt(a)}-${fmt(b)}">${label}</div>`; }
+function subClip(s){ return `<div class="clip sub${selKind==="sub"&&selIdx===s.idx?" sel":""}" style="${pxs(s.source_start,s.source_end)}; background:${s.css_color}" data-sub="${s.idx}" data-s0="${s.source_start}" data-s1="${s.source_end}" title="${s.text}">${s.text}</div>`; }
+
+// 汎用クリップドラッグ: 本体=移動(bodyDrag時) / 端=伸縮(edges) / クリック=onClick
+function makeDraggable(el, {edges, onClick, onCommit, bodyDrag=true}){
+  const s0=+el.dataset.s0, s1=+el.dataset.s1, EDGE=7;
+  el.addEventListener("mousemove",e=>{ if(dragging)return; const r=el.getBoundingClientRect(), x=e.clientX-r.left;
+    el.style.cursor = (edges&&(x<EDGE||x>r.width-EDGE))?"ew-resize":(bodyDrag?"grab":"pointer"); });
+  el.addEventListener("mousedown",e=>{
+    e.preventDefault(); e.stopPropagation();
+    const r=el.getBoundingClientRect(), x=e.clientX-r.left;
+    const zone = edges&&x<EDGE?"l" : edges&&x>r.width-EDGE?"r" : "move";
+    const noop = (zone==="move" && !bodyDrag);
+    const startX=e.clientX; let ns0=s0, ns1=s1, moved=false; dragging=true;
+    const SNAPS = snap ? snapPoints(s0,s1) : null;
+    const mm=ev=>{ if(Math.abs(ev.clientX-startX)>3) moved=true; if(noop) return; const dt=(ev.clientX-startX)/PXPS;
+      if(zone==="move"){ ns0=s0+dt; ns1=s1+dt; } else if(zone==="l"){ ns0=Math.min(s1-0.2,s0+dt); } else { ns1=Math.max(s0+0.2,s1+dt); }
+      if(SNAPS){ const thr=9/PXPS;
+        if(zone==="move"){ // 長さ維持で両端のうち近い方を編集点に吸着
+          let best=null; for(const p of SNAPS){ for(const [d,edge] of [[Math.abs(ns0-p),0],[Math.abs(ns1-p),1]]) if(d<thr&&(!best||d<best.d)) best={d,off:p-(edge?ns1:ns0)}; }
+          if(best){ ns0+=best.off; ns1+=best.off; } }
+        else { const v=zone==="l"?ns0:ns1; let bp=null; for(const p of SNAPS){ const d=Math.abs(v-p); if(d<thr&&(!bp||d<bp.d)) bp={d,p}; }
+          if(bp){ if(zone==="l") ns0=Math.min(s1-0.2,bp.p); else ns1=Math.max(s0+0.2,bp.p); } } }
+      ns0=clamp(ns0,0,D.source.duration); ns1=clamp(ns1,0,D.source.duration);
+      el.style.left=(54+t2x(ns0))+"px"; el.style.width=Math.max(2,t2x(ns1-ns0))+"px"; };
+    const mu=()=>{ document.removeEventListener("mousemove",mm); document.removeEventListener("mouseup",mu); dragging=false;
+      if(!moved){ onClick(); return; } if(noop) return; onCommit(ns0, ns1, s0, s1, zone); };
+    document.addEventListener("mousemove",mm); document.addEventListener("mouseup",mu);
+  });
+}
+
+// ── 編集（即保存＋Undo/Redo） ──
+async function rawPost(url, body){ await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); }
+async function editOp(url, undoBody, redoBody){ await rawPost(url, redoBody); undoStack.push({url,undoBody,redoBody}); redoStack=[]; await load(); }
+async function undo(){ const op=undoStack.pop(); if(!op)return; redoStack.push(op); await rawPost(op.url, op.undoBody); await load(); reselect(); }
+async function redo(){ const op=redoStack.pop(); if(!op)return; undoStack.push(op); await rawPost(op.url, op.redoBody); await load(); reselect(); }
+function reselect(){ if(selKind==="sub")selectSub(selIdx); else if(selKind==="fr")selectFraming(selIdx); else if(selKind==="ch")selectChapter(selIdx); else if(selKind==="pu")selectPostUnit(selIdx); }
+$("uBtn").onclick=undo; $("rBtn").onclick=redo;
+$("snapBtn").onclick=()=>{ snap=!snap; $("snapBtn").classList.toggle("on",snap); };
+$("addSub").onclick=async()=>{ const t=curSrcTime();
+  const r=await (await fetch("/api/subtitle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({start:t,end:Math.min(D.source.duration,t+2)})})).json();
+  await load(); selectSub(r.idx); };
+$("addChap").onclick=async()=>{ const t=curSrcTime();
+  await (await fetch("/api/chapter",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({start_at:t})})).json();
+  await load(); };
+async function splitAt(){ const t=curSrcTime();
+  // 調整クリップ選択中は framing を分割、それ以外はカット(segment)を分割
+  const url = selKind==="fr" ? "/api/framing/split" : "/api/segment/split";
+  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({at:t})});
+  if(r.ok){ undoStack=[]; redoStack=[]; await load(); if(selKind==="fr") syncSelection(t); }  // 構造変更=Undo履歴クリア
+  else { const m=await r.json().catch(()=>({})); flashMsg(m.detail||"分割できません"); }
+}
+// In/Out 範囲を非破壊カット（invalid化）。端が区間途中なら分割して範囲に揃える。
+async function cutRange(){
+  if(inP==null||outP==null){ flashMsg("In/Out を設定してください（I / O）"); return; }
+  const lo=Math.min(inP,outP), hi=Math.max(inP,outP);
+  const r=await fetch("/api/segment/cut-range",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({start:lo,end:hi})});
+  if(r.ok){ undoStack=[]; redoStack=[]; inP=outP=null; $("inmark").style.display="none"; $("outmark").style.display="none"; await load(); }
+  else { const m=await r.json().catch(()=>({})); flashMsg(m.detail||"カットできません"); }
+}
+// 吸着先＝編集点（カット/字幕/シーン/章の境界＋再生ヘッド＋0/終端）。自分の元位置は除外。
+function snapPoints(self0, self1){
+  const ps=new Set([0, D.source.duration, curSrcTime()]);
+  D.segments.forEach(s=>{ps.add(s.start);ps.add(s.end);});
+  D.subtitles.forEach(s=>{ps.add(s.source_start);ps.add(s.source_end);});
+  D.framing.forEach(f=>{ps.add(f.start);ps.add(f.end);});
+  D.chapters.forEach(c=>ps.add(c.start_at));
+  ps.delete(self0); ps.delete(self1);
+  return [...ps];
+}
+// テキスト入力は即時にローカル反映、保存はデバウンス（フォーカス維持のため side は再構築しない）
+function liveText(url, field, orig, getVal, localApply){
+  return ()=>{ const v=getVal(); if(localApply) localApply(v); clearTimeout(saveTmr);
+    saveTmr=setTimeout(()=>editOp(url,{[field]:orig},{[field]:v}),350); };
+}
+
+function selectSub(idx, seek=true){
+  selKind="sub"; selIdx=idx; const s=D.subtitles.find(x=>x.idx===idx); if(!s) return; buildTimeline();
+  const speakers=[...new Set([s.speaker,"mossan-hoshi","Taniguchi"].filter(Boolean))];
+  const url=`/api/subtitle/${idx}`;
+  $("side").innerHTML=`<h3>字幕 #${idx} <span style="color:#778">出力 ${fmt(s.out_start)}–${fmt(s.out_end)}</span> <span class="saved" id="sv"></span></h3>
+    <label>本文（入力で即反映・自動保存）</label><input type="text" id="e_text" value="${(s.text||"").replace(/"/g,"&quot;")}">
+    <div class="row"><div style="flex:1"><label>話者</label><select id="e_spk">${speakers.map(x=>`<option ${x===s.speaker?"selected":""}>${x}</option>`).join("")}<option value="">（なし）</option></select></div>
+    <div style="flex:1"><label>色</label><select id="e_col">${["auto","red","purple","blue","green"].map(c=>`<option ${(D.subtitle_speaker_colors[s.speaker]||"auto")===c?"selected":""}>${c}</option>`).join("")}</select></div>
+    <div style="flex:1"><label>style</label><select id="e_sty"><option ${s.style==="main"?"selected":""}>main</option><option ${s.style==="intro"?"selected":""}>intro</option></select></div></div>`;
+  $("e_text").oninput=liveText(url,"text",s.text,()=>$("e_text").value,v=>{ s.text=v; const c=document.querySelector(`[data-sub="${idx}"]`); if(c)c.textContent=v; flash(); });
+  $("e_spk").onchange=()=>{ editOp(url,{speaker:s.speaker||""},{speaker:$("e_spk").value}); };
+  $("e_sty").onchange=()=>{ editOp(url,{style:s.style},{style:$("e_sty").value}); };
+  $("e_col").onchange=()=>{ const old=D.subtitle_speaker_colors[$("e_spk").value]||"auto"; editOp(`/api/speaker-color`,{speaker:$("e_spk").value,color:old},{speaker:$("e_spk").value,color:$("e_col").value}); };
+  if(seek) seekSrc(s.source_start);
+}
+function selectFraming(idx, seek=true){
+  selKind="fr"; selIdx=idx; const f=D.framing[idx]; if(!f) return; buildTimeline();
+  const url=`/api/framing/${idx}`;
+  const cropInfo = f.bbox ? `crop (x${f.bbox[0]} y${f.bbox[1]} ${f.bbox[2]}×${f.bbox[3]})` : "全画面（crop無し）";
+  $("side").innerHTML=`<h3>調整クリップ #${idx} <span style="color:#778">${fmt(f.start)}–${fmt(f.end)}</span> <span class="saved" id="sv"></span></h3>
+    <label>種別(kind)</label><select id="f_kind">${["static","loading","pending"].map(k=>`<option ${f.kind===k?"selected":""}>${k}</option>`).join("")}</select>
+    <label>crop（トリミング）枠</label>
+    <div style="color:#ffb300;font-size:12px;margin:2px 0">${cropInfo}</div>
+    <div class="row"><button class="t" id="f_fullscr">全画面に戻す</button></div>
+    <div style="color:#778;font-size:11px;margin:4px 0 8px">※ソース映像上の橙枠をドラッグ=移動／角ハンドル=リサイズ（16:9維持）。全画面枠の角を縮めるとcrop作成。即保存。</div>
+    <label>ローディング表示ラベル（kind=loading時）</label><input type="text" id="f_lbl" value="${(f.loading_label||"").replace(/"/g,"&quot;")}" placeholder="例: 画面を準備">
+    <label>警告メモ</label><input type="text" id="f_warn" value="${(f.warning||"").replace(/"/g,"&quot;")}">`;
+  $("f_kind").onchange=()=>editOp(url,{kind:f.kind},{kind:$("f_kind").value});
+  $("f_lbl").oninput=liveText(url,"loading_label",f.loading_label||"",()=>$("f_lbl").value,()=>flash());
+  $("f_warn").oninput=liveText(url,"warning",f.warning||"",()=>$("f_warn").value,()=>flash());
+  $("f_fullscr").onclick=()=>{ if(!f.bbox)return; editOp(url,{bbox:f.bbox},{clear_crop:true}); };
+  if(seek) seekSrc(f.start);
+}
+function selectChapter(idx, seek=true){
+  selKind="ch"; selIdx=idx; const c=D.chapters[idx]; if(!c) return; buildTimeline();
+  const url=`/api/chapter/${idx}`;
+  $("side").innerHTML=`<h3>章 #${idx} <span style="color:#778">開始 ${fmt(c.start_at)}</span> <span class="saved" id="sv"></span></h3>
+    <label>章タイトル</label><input type="text" id="c_ct" value="${(c.chapter_title||"").replace(/"/g,"&quot;")}">
+    <label>セクション（大見出し）</label><input type="text" id="c_st" value="${(c.section_title||"").replace(/"/g,"&quot;")}">
+    <label><input type="checkbox" id="c_req" ${c.is_required?"checked":""}> YouTubeチャプター必須</label>`;
+  $("c_ct").oninput=liveText(url,"chapter_title",c.chapter_title||"",()=>$("c_ct").value,()=>flash());
+  $("c_st").oninput=liveText(url,"section_title",c.section_title||"",()=>$("c_st").value,()=>flash());
+  $("c_req").onchange=()=>editOp(url,{is_required:c.is_required},{is_required:$("c_req").checked});
+  if(seek) seekSrc(c.start_at);
+}
+function selectPostUnit(idx, seek=true){
+  selKind="pu"; selIdx=idx; const p=(D.post_units||[])[idx]; if(!p) return; buildTimeline();
+  $("side").innerHTML=`<h3>投稿単位 #${idx} <span style="color:#778">${fmt(p.start)}–${fmt(p.end)} ・ ${p.n_ranges}区間 ・ 章${p.chapter_ids.length}</span> <span class="saved" id="sv"></span></h3>
+    <label>投稿タイトル（この単位が1本の動画に）</label><input type="text" id="p_title" value="${(p.title||"").replace(/"/g,"&quot;")}">
+    <div style="color:#667;font-size:11px;margin-top:8px">※ 投稿単位の範囲は採用区間の集合。範囲分割は章/カット側で調整。</div>`;
+  $("p_title").oninput=liveText(`/api/postunit/${idx}`,"title",p.title||"",()=>$("p_title").value,()=>flash());
+  if(seek) seekSrc(p.start);
+}
+function flash(){ const e=$("sv"); if(e){ e.textContent="● 保存"; clearTimeout(e._t); e._t=setTimeout(()=>e.textContent="",800); } }
+
+// ── 再生ヘッド・カットスキップ・ライブ字幕 ──
+function tick(){
+  if(D){ let t=curSrcTime(); const spd=curSpeed();
+    // カット(無効)区間に入ったら、通常(1x)再生中だけ次のkeep先頭へスキップ（高速送りは各stepで処理）
+    if(!master().paused && !revRAF && !fwdRAF && !inKept(t)){ const ns=nextKeptStart(t); if(ns!=null){ seekSrc(ns); t=ns; } else master().pause(); }
+    $("playhead").style.left=(54+t2x(t))+"px";
+    const wrap=$("tlwrap"), x=54+t2x(t);
+    if(x<wrap.scrollLeft+80||x>wrap.scrollLeft+wrap.clientWidth-80) wrap.scrollLeft=x-wrap.clientWidth/2;
+    // 2倍速以上は重い描画（レンダ合成・字幕重畳・crop枠のDOM更新）を全て凍結＝負荷を最小化。
+    const ov=$("subov");
+    if(mode==="src"){ ov.style.display="none"; }
+    else if(spd<2){ renderResult(t); ov.style.display="block";
+      const cur=D.subtitles.find(s=>t>=s.source_start && t<s.source_end);  // 半開=継ぎ目は次の字幕
+      if(cur){ ov.textContent=cur.text; ov.style.color=cur.css_color; ov.style.textShadow=dblShadow(cur.css_color); }
+      else ov.textContent="";
+      placeOverlay(ov, rcv); }
+    if(spd<2) drawCropOverlay(t);
+    // 2倍速以上は文字起こしテロップを低頻度更新（毎フレームの再計算をやめて負荷減）
+    if(spd>=2){ if(performance.now()-tickerLast>250){ tickerLast=performance.now(); updateTicker(); } }
+    else updateTicker();
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+// ── ソース映像上の crop(トリミング)bbox 重畳＋ドラッグ編集 ──
+let cropDragging=false, cropIdx=null;
+function contentRect(v){ // object-fit:contain の実コンテンツ矩形（vboxローカル座標）
+  const ar=D.source.width/D.source.height, W=v.clientWidth, H=v.clientHeight; if(!W||!H) return null;
+  let w,h; if(W/H>ar){ h=H; w=H*ar; } else { w=W; h=W/ar; }
+  return {left:v.offsetLeft+(W-w)/2, top:v.offsetTop+(H-h)/2, w, h};
+}
+// 半開区間 [start,end)＝継ぎ目はそこから始まる区間を採用（選択追従と一致）。末尾終端のみ最終区間。
+function framingAt(t){
+  let r=D.framing.find(f=>t>=f.start && t<f.end);
+  if(!r && D.framing.length && t>=D.framing[D.framing.length-1].end-1e-3) r=D.framing[D.framing.length-1];
+  return r;
+}
+function cropRegion(t){ // 再生ヘッド位置の調整クリップに追従（移動で切替わる）
+  const f=framingAt(t); return f? {f, idx:D.framing.indexOf(f)} : null;
+}
+function drawCropOverlay(t){
+  const ov=$("cropov"); if(mode==="prev"){ ov.style.display="none"; return; } ov.style.display="block";
+  if(cropDragging) return;
+  const reg=cropRegion(t), rc=contentRect(vid);
+  if(!reg||!rc){ ov.innerHTML=""; cropIdx=null; return; }
+  const f=reg.f, sx=rc.w/D.source.width, sy=rc.h/D.source.height, full=!f.bbox;
+  const b = f.bbox || [0,0,D.source.width,D.source.height];  // 全画面でも全画面サイズの枠を表示
+  if(cropIdx!==reg.idx){ cropIdx=reg.idx;  // 区間が変わったら作り直し（常に編集可・ハンドル付き）
+    ov.innerHTML=`<div id="cropbox"><div class="lbl"></div><div class="gh tl"></div><div class="gh tr"></div><div class="gh bl"></div><div class="gh br"></div></div>`;
+    attachCropDrag(reg.idx);
+  }
+  const cb=$("cropbox"); if(!cb) return;
+  cb.classList.toggle("full", full);
+  cb.style.left=(rc.left+b[0]*sx)+"px"; cb.style.top=(rc.top+b[1]*sy)+"px";
+  cb.style.width=(b[2]*sx)+"px"; cb.style.height=(b[3]*sy)+"px";
+  cb.querySelector(".lbl").textContent = full ? "全画面（角ドラッグでcrop作成）" : `crop ${b[2]}×${b[3]}`;
+}
+function attachCropDrag(idx){
+  const cb=$("cropbox"), ar=D.source.width/D.source.height;
+  const commit=()=>{ const rc=contentRect(vid); const kx=D.source.width/rc.w, ky=D.source.height/rc.h;
+    const bb=[Math.round((parseFloat(cb.style.left)-rc.left)*kx), Math.round((parseFloat(cb.style.top)-rc.top)*ky),
+              Math.round(parseFloat(cb.style.width)*kx), Math.round(parseFloat(cb.style.height)*ky)];
+    const f=D.framing[idx]; editOp(`/api/framing/${idx}`, {bbox:f.bbox, clear_crop:!f.bbox}, {bbox:bb}); };
+  // 本体ドラッグ=移動
+  cb.addEventListener("mousedown",e=>{ if(e.target.classList.contains("gh")) return; e.preventDefault(); e.stopPropagation();
+    cropDragging=true; const rc=contentRect(vid); const x0=e.clientX,y0=e.clientY;
+    const L=parseFloat(cb.style.left),T=parseFloat(cb.style.top),Wd=parseFloat(cb.style.width),Hd=parseFloat(cb.style.height);
+    const mm=ev=>{ const nl=clamp(L+ev.clientX-x0, rc.left, rc.left+rc.w-Wd), nt=clamp(T+ev.clientY-y0, rc.top, rc.top+rc.h-Hd);
+      cb.style.left=nl+"px"; cb.style.top=nt+"px"; };
+    const mu=()=>{ document.removeEventListener("mousemove",mm); document.removeEventListener("mouseup",mu); cropDragging=false; commit(); };
+    document.addEventListener("mousemove",mm); document.addEventListener("mouseup",mu); });
+  // 角ハンドル=リサイズ（16:9維持・対角固定）
+  cb.querySelectorAll(".gh").forEach(h=>{ const corner=["tl","tr","bl","br"].find(c=>h.classList.contains(c));
+    h.addEventListener("mousedown",e=>{ e.preventDefault(); e.stopPropagation(); cropDragging=true;
+      const rc=contentRect(vid); const x0=e.clientX;
+      const L=parseFloat(cb.style.left),T=parseFloat(cb.style.top),Wd=parseFloat(cb.style.width),Hd=parseFloat(cb.style.height);
+      const R=L+Wd, B=T+Hd;
+      const maxW = corner==="br" ? Math.min(rc.left+rc.w-L, (rc.top+rc.h-T)*ar)
+                 : corner==="bl" ? Math.min(R-rc.left, (rc.top+rc.h-T)*ar)
+                 : corner==="tr" ? Math.min(rc.left+rc.w-L, (B-rc.top)*ar)
+                 :                  Math.min(R-rc.left, (B-rc.top)*ar);
+      const mm=ev=>{ const dx=ev.clientX-x0; let nw=(corner==="br"||corner==="tr")?Wd+dx:Wd-dx;
+        nw=clamp(nw,30,maxW); const nh=nw/ar; let nl,nt;
+        if(corner==="br"){ nl=L; nt=T; } else if(corner==="bl"){ nl=R-nw; nt=T; }
+        else if(corner==="tr"){ nl=L; nt=B-nh; } else { nl=R-nw; nt=B-nh; }
+        cb.style.left=nl+"px"; cb.style.top=nt+"px"; cb.style.width=nw+"px"; cb.style.height=nh+"px"; };
+      const mu=()=>{ document.removeEventListener("mousemove",mm); document.removeEventListener("mouseup",mu); cropDragging=false; commit(); };
+      document.addEventListener("mousemove",mm); document.addEventListener("mouseup",mu); }); });
+}
+
+// レンダ結果＝ソース vid の現フレームに framing(crop/loading) を適用して canvas へ描く（動的・mp4不要）
+function renderResult(t){
+  if(!rcv.clientWidth||!rcv.clientHeight) return;
+  if(rcv.width!==D.source.width){ rcv.width=D.source.width; rcv.height=D.source.height; }
+  const reg=framingAt(t);
+  // 無変化（停止中の同一フレーム）は再描画スキップ＝軽量。エンコードは一切しない。
+  const key=(reg?reg.start:-1)+"|"+(reg&&reg.bbox?reg.bbox.join(","):"f")+"|"+(vid.currentTime||0).toFixed(2);
+  if(key===rcv._key) return; rcv._key=key;
+  const ctx=rcv._ctx||(rcv._ctx=rcv.getContext("2d"));
+  ctx.fillStyle="#000"; ctx.fillRect(0,0,rcv.width,rcv.height);
+  if(reg && reg.kind==="loading"){  // ローディング区間はプレースホルダ表示
+    ctx.fillStyle="#f3f3f3"; ctx.fillRect(0,0,rcv.width,rcv.height);
+    ctx.fillStyle="#444"; ctx.font="bold 64px Meiryo"; ctx.textAlign="center"; ctx.textBaseline="middle";
+    ctx.fillText((reg.loading_label||"画面を準備")+"中…", rcv.width/2, rcv.height/2);
+    return;
+  }
+  const b=(reg&&reg.bbox)?reg.bbox:[0,0,D.source.width,D.source.height];  // framing crop
+  if(vid.readyState>=2){ try{ ctx.drawImage(vid, b[0],b[1],b[2],b[3], 0,0, rcv.width, rcv.height); }catch(e){} }
+}
+
+// ── ライブ文字起こしテロップ（再生に同期して流れる） ──
+let WORDS=[], tkLast=-2;
+fetch("/api/transcript").then(r=>r.json()).then(d=>{ WORDS=d.words||[]; });
+function wordIdx(t){ let lo=0,hi=WORDS.length-1,res=-1; while(lo<=hi){ const m=(lo+hi)>>1; if(WORDS[m].t<=t){res=m;lo=m+1;} else hi=m-1; } return res; }
+function esc(s){ return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function updateTicker(){
+  if(!WORDS.length) return; const idx=wordIdx(curSrcTime());
+  if(idx===tkLast) return; tkLast=idx;
+  // 表示幅に応じて未来語を多めに出し、右端まで埋める
+  const cont=$("ticker"), need=Math.ceil(cont.clientWidth/16)+10;
+  const inner=$("tickerInner"), a=Math.max(0,idx-6), b=Math.min(WORDS.length,(idx<0?0:idx)+need);
+  let html=""; for(let i=a;i<b;i++){ const cls=i===idx?"tkc":(i<idx?"tkp":"tkf"); html+=`<span class="${cls}">${esc(WORDS[i].text)}</span>`; }
+  inner.innerHTML=html;
+  const cur=inner.querySelector(".tkc");
+  const anchor = cur ? (cur.offsetLeft+cur.offsetWidth/2) : 0;
+  inner.style.transform=`translateX(${(cont.clientWidth*0.22 - anchor).toFixed(0)}px)`;
+}
+
+// タイムライン左クリック＝シーク、押したままドラッグ＝スクラブ。
+// シーク詰まり対策: マウス位置は scrubT に貯め、前シーク完了時(seeked)に最新位置へ追いシーク。
+// → フレーム・枠・再生ヘッドが実デコード位置で同期して追従（枠だけ先行しない）。
+let scrubT=null;
+function scrubSeek(){ if(scrubT==null || vid.seeking) return; if(Math.abs((vid.currentTime||0)-scrubT)>0.01) seekSrc(scrubT); }
+vid.addEventListener("seeked",()=>{ if(scrubT!=null) scrubSeek(); });
+$("tlwrap").addEventListener("mousedown",e=>{
+  if(e.button!==0 || e.target.closest(".clip")) return;  // クリップ操作とは別
+  const wrap=$("tlwrap");
+  const tAt=ev=>clamp(x2t(ev.clientX - wrap.getBoundingClientRect().left + wrap.scrollLeft - 54),0,D.source.duration);
+  dragging=true; scrubT=tAt(e); seekSrc(scrubT);
+  const mm=ev=>{ ev.preventDefault(); scrubT=tAt(ev); scrubSeek(); };
+  const mu=()=>{ document.removeEventListener("mousemove",mm); document.removeEventListener("mouseup",mu);
+    dragging=false; const tt=scrubT; scrubT=null; if(tt!=null) seekSrc(tt); };  // 最終位置を確定シーク
+  document.addEventListener("mousemove",mm); document.addEventListener("mouseup",mu);
+});
+// ホイール=再生ヘッド(カーソル)を移動 / Ctrl+ホイール=ズーム（カーソル位置のフレームを固定して拡縮）
+$("tlwrap").addEventListener("wheel",e=>{
+  e.preventDefault(); const wrap=$("tlwrap");
+  if(e.ctrlKey){
+    const mouseX = e.clientX - wrap.getBoundingClientRect().left;     // ビューポート内x
+    const t = x2t(mouseX + wrap.scrollLeft - 54);                     // カーソル直下の時刻
+    PXPS = clamp(PXPS*(e.deltaY<0?1.15:1/1.15), minPXPS(), 60);
+    buildTimeline(); $("zoom").value=PXPS; $("zlbl").textContent=PXPS.toFixed(2)+"px/s";
+    wrap.scrollLeft = (54 + t2x(t)) - mouseX;                         // 同じフレームをカーソル位置に保つ
+  } else {
+    seekSrc(curSrcTime() + e.deltaY/PXPS);  // ホイール量を尺へ換算して再生ヘッド移動（拡大時ほど微細）
+  }
+}, {passive:false});
+
+// ── スプリッタ ──
+(function(){ const sp=$("splitter"); let drag=false;
+  sp.addEventListener("mousedown",()=>{ drag=true; document.body.style.userSelect="none"; });
+  window.addEventListener("mousemove",e=>{ if(!drag)return; const top=$("stage").getBoundingClientRect().top;
+    $("stage").style.height = clamp(e.clientY-top, 120, window.innerHeight-160)+"px"; });
+  window.addEventListener("mouseup",()=>{ drag=false; document.body.style.userSelect=""; });
+})();
+
+// ── 再生制御 ── 1x=通常デコード再生 / 2x以上はシークステップ（低負荷・最大32x・playbackRate依存なし）
+function stopRev(){ if(revRAF){cancelAnimationFrame(revRAF); revRAF=null;} }
+function stopFwd(){ if(fwdRAF){cancelAnimationFrame(fwdRAF); fwdRAF=null;} }
+function curSpeed(){ if(fwdRAF) return fwdRate; if(revRAF) return revRate; const v=vid; return (v&&!v.paused)?(v.playbackRate||1):1; }
+function pauseAll(){ stopRev(); stopFwd(); vid.pause(); fwdRate=1; revRate=1; }
+// 倍速シークステップ（dir=+1前進/-1後退）。target をウォールクロックで進め、シーク完了時に最新targetへ。
+// target は毎フレーム必ず進む（シーク待ちでも積み残さない）ので実効倍率がフルに出る（最大32x）。
+function stepRun(dir){ let last=performance.now(); let target=curSrcTime();
+  const step=now=>{ const dt=(now-last)/1000; last=now;
+    target += dir*dt*(dir>0?fwdRate:revRate);
+    if(dir>0 && !inKept(target)){ const ns=nextKeptStart(target); target = ns!=null?ns:D.source.duration; }  // カット飛ばし
+    if(target<=0){ stopRev(); seekSrc(0); return; }
+    if(target>=D.source.duration){ stopFwd(); seekSrc(D.source.duration); return; }
+    if(!vid.seeking) seekSrc(target);   // 完了していれば最新targetへ追いシーク（積み残しなし）
+    const id=requestAnimationFrame(step); if(dir>0) fwdRAF=id; else revRAF=id; };
+  const id=requestAnimationFrame(step); if(dir>0) fwdRAF=id; else revRAF=id; }
+function playFwd(){ stopRev();
+  const playing = fwdRAF!=null || !vid.paused;
+  fwdRate = playing ? Math.min(32, fwdRate*2) : 1;   // 停止/逆再生から=1x、再生中は倍々で最大32x
+  stopFwd(); vid.pause();
+  if(fwdRate<=1){ vid.playbackRate=1; vid.play(); } else stepRun(1);
+}
+function playRev(){ stopFwd(); vid.pause();
+  revRate = revRAF!=null ? Math.min(32, revRate*2) : 1;  // J始動=1x、押す度に倍化（最大32x）
+  stopRev(); stepRun(-1);
+}
+function togglePlay(){ if(fwdRAF||revRAF){ pauseAll(); return; }
+  if(vid.paused){ fwdRate=1; vid.playbackRate=1; vid.play(); } else pauseAll(); }
+function frameStep(d){ pauseAll(); seekSrc(curSrcTime()+d/(D.source.fps||30)); }
+// ↑↓の移動基準＝選択中アイテム種別の区切り（字幕/シーン=調整/章/投稿）。未選択時はカット基準。
+function editPoints(){ const ps=new Set([0,D.source.duration]);
+  if(selKind==="sub") D.subtitles.forEach(s=>{ps.add(s.source_start);ps.add(s.source_end);});
+  else if(selKind==="fr") D.framing.forEach(f=>{ps.add(f.start);ps.add(f.end);});
+  else if(selKind==="ch") D.chapters.forEach(c=>ps.add(c.start_at));
+  else if(selKind==="pu") (D.post_units||[]).forEach(p=>{ps.add(p.start);ps.add(p.end);});
+  else D.segments.forEach(s=>{ps.add(s.start);ps.add(s.end);});  // 未選択=カット基準
+  return [...ps].sort((a,b)=>a-b); }
+function jumpEdit(dir){ const t=curSrcTime(), ps=editPoints();
+  const nx = dir>0 ? ps.find(p=>p>t+1e-3) : [...ps].reverse().find(p=>p<t-1e-3);
+  if(nx!=null){ seekSrc(nx); syncSelection(nx); } }
+// 選択中なら、移動先から始まる項目を選択（無ければ手前の項目）。再生ヘッドは動かさない。
+function itemsOf(kind){ return {sub:D.subtitles, fr:D.framing, ch:D.chapters, pu:D.post_units||[]}[kind]; }
+function itemStart(kind,it){ return kind==="sub"?it.source_start : kind==="ch"?it.start_at : it.start; }
+function syncSelection(t){
+  if(!selKind) return; const arr=itemsOf(selKind); if(!arr||!arr.length) return;
+  let pos = arr.findIndex(it=>Math.abs(itemStart(selKind,it)-t)<0.03);   // 移動先から始まる項目
+  if(pos<0){ for(let i=0;i<arr.length;i++){ if(itemStart(selKind,arr[i])<=t+1e-3) pos=i; else break; } } // 手前
+  if(pos<0) pos=0;
+  if(selKind==="sub") selectSub(arr[pos].idx,false); else if(selKind==="fr") selectFraming(pos,false);
+  else if(selKind==="ch") selectChapter(pos,false); else if(selKind==="pu") selectPostUnit(pos,false);
+}
+// Ctrl+←→: 選択中と同種の前後アイテムへ選択移動
+function selectNeighbor(dir){
+  const arr={sub:D.subtitles, fr:D.framing, ch:D.chapters, pu:D.post_units||[]}[selKind];
+  if(!arr||!arr.length) return;
+  const ni=clamp(selIdx+dir,0,arr.length-1); if(ni===selIdx) return;
+  if(selKind==="sub") selectSub(arr[ni].idx); else if(selKind==="fr") selectFraming(ni);
+  else if(selKind==="ch") selectChapter(ni); else if(selKind==="pu") selectPostUnit(ni);
+}
+// Alt+←→: 選択中の隣接（隙間なく接する）同種アイテムと結合し内容を隣接側へ統一（字幕/調整）
+let busyMerge=false;
+async function mergeSelected(dir){
+  if(busyMerge) return;  // 多重発火（キーリピート/連打）で反対側まで巻き込むのを防ぐ
+  if(selKind!=="sub" && selKind!=="fr") return;
+  busyMerge=true;
+  try{
+    const base=selKind==="sub"?"subtitle":"framing", kind=selKind;
+    const r=await fetch(`/api/${base}/${selIdx}/merge`,{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({dir})});
+    if(!r.ok){ const m=await r.json().catch(()=>({})); flashMsg(m.detail||"結合できる隣接がありません"); return; }
+    const d=await r.json(); undoStack=[]; redoStack=[]; await load();   // 構造変更につき履歴クリア
+    if(kind==="sub") selectSub(d.idx); else selectFraming(d.idx);
+  } finally { busyMerge=false; }
+}
+function flashMsg(t){ const e=$("sv"); if(e){ e.textContent=t; clearTimeout(e._t); e._t=setTimeout(()=>e.textContent="",1500); } }
+
+window.addEventListener("keydown",e=>{
+  const k=e.key.toLowerCase(), inField=(e.target.tagName==="INPUT"||e.target.tagName==="SELECT");
+  // Undo/Redo はフィールド内でも効かせる
+  if((e.ctrlKey||e.metaKey) && k==="z"){ e.preventDefault(); e.shiftKey?redo():undo(); return; }
+  if((e.ctrlKey||e.metaKey) && k==="y"){ e.preventDefault(); redo(); return; }
+  if(inField) return;
+  if((e.ctrlKey||e.metaKey) && (k==="arrowleft"||k==="arrowright")){ e.preventDefault(); if(!e.repeat) selectNeighbor(k==="arrowleft"?-1:1); return; }
+  if(e.altKey && (k==="arrowleft"||k==="arrowright")){ e.preventDefault(); if(!e.repeat) mergeSelected(k==="arrowleft"?-1:1); return; }  // 自動リピート無視
+  if(["j","k","l","i","o"," ","arrowleft","arrowright","arrowup","arrowdown","+","-","="].includes(k)) e.preventDefault();
+  if(k==="k") pauseAll(); else if(k==="l") playFwd(); else if(k==="j") playRev();
+  else if(k===" ") togglePlay();
+  else if(k==="arrowleft") frameStep(-1); else if(k==="arrowright") frameStep(1);
+  else if(k==="arrowup") jumpEdit(-1); else if(k==="arrowdown") jumpEdit(1);
+  else if(k==="+"||k==="=") setZoom(1.4); else if(k==="-") setZoom(1/1.4);
+  else if(k==="n"){ $("snapBtn").click(); }
+  else if(k==="b"){ splitAt(); }
+  else if(k==="i"){ inP=curSrcTime(); $("inmark").style.display=""; $("inmark").style.left=(54+t2x(inP))+"px"; }
+  else if(k==="o"){ outP=curSrcTime(); $("outmark").style.display=""; $("outmark").style.left=(54+t2x(outP))+"px"; }
+  else if(k==="delete"||k==="backspace"){ e.preventDefault(); cutRange(); }  // In/Out範囲を非破壊カット
+});
+load().then(()=>{ syncZoomRange(); $("zoom").value=PXPS; $("zlbl").textContent=PXPS.toFixed(2)+"px/s";
+  setMode("both"); });  // 既定=両方表示（レンダ結果は動的合成で常時利用可）
+window.addEventListener("resize",()=>{ if(D){ syncZoomRange(); applyZoom(); } });
+</script>
+</body>
+</html>

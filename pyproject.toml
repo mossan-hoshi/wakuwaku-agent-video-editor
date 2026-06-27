@@ -1,0 +1,102 @@
+[project]
+name = "wwedit"
+version = "0.0.1"
+description = "「わくわくべんきょ会」収録動画の自動編集＆YouTube投稿AIエージェント"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+    "typer>=0.12",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+# 各マイルストーンで有効化する重い依存はextra分割（8GB VRAM/容量配慮）
+transcribe = [
+    "faster-whisper>=1.0",
+]
+# WhisperX（wav2vec2強制アライメントで word境界を精緻化）。CUDA版 torch を要する＝容量大のため別extra。
+align = [
+    "whisperx>=3.3",
+    "torch>=2.5",
+    "torchaudio>=2.5",
+    "setuptools>=70,<80",  # ctranslate2 が import pkg_resources（setuptools81+で削除）するため固定
+]
+cv = [
+    "opencv-python>=4.9",
+    "scenedetect>=0.6.4",
+    "numpy>=1.26",
+]
+webapp = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+]
+# [E]フレーミング: OmniParser V2 のアイコン検出器(YOLOv8)で GUI 要素 bbox を取り、
+# 非interactable領域の補集合＝コンテンツ領域と推論する。caption(Florence)は使わない。
+# [2]/[D] 画面OCR: 固有名補正とPIIマスキングに使う。プラン本命の PaddleOCR(PP-OCRv5)は
+# 当環境で torch と Windows DLL 衝突(shm.dll)で import 不可のため、プラン明記の代替
+# RapidOCR(同系ONNX, onnxruntime駆動・torch非依存)を採用。日本語(漢字/かな)実測で高信頼。
+ocr = [
+    "rapidocr-onnxruntime>=1.4",
+    "onnxruntime>=1.17",
+]
+omni = [
+    "ultralytics>=8.3",
+    "huggingface-hub>=0.25",
+    # torch(cu124)と整合する CUDA 版 torchvision（PyPI既定はCPU版で torchvision::nms が
+    # CUDAバックエンド未実装になるため、下の tool.uv.sources で cu124 索引に固定）
+    "torchvision>=0.21",
+]
+# [E] 専用クロップモデル学習。frozen backbone(DINOv2 ViT-S/14, Apache-2.0)の dense patch
+# 特徴を timm で取り、事前キャッシュ→二頭ヘッド(no_crop/crop分類 + center/log-scale回帰)
+# のみ学習する（8GB/Turing で fp16・数分）。Deep Research 推奨の Phase0 構成。
+framing-train = [
+    "timm>=1.0",
+    "torchvision>=0.21",
+    "numpy>=1.26",
+    "pillow>=10.0",
+]
+
+[project.scripts]
+wwedit = "wwedit.cli:app"
+
+# PEP 735 dependency groups（2026のdev依存ベストプラクティス）
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+    "ty>=0.0.1",
+    "pytest>=8.1",
+]
+
+# torch/torchaudio は CUDA(cu124)ビルドを使う（RTX 2070, Turing）。PyPI既定はCPU版のため明示。
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu124" }]
+torchaudio = [{ index = "pytorch-cu124" }]
+torchvision = [{ index = "pytorch-cu124" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "wwedit"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer は引数デフォルトで Argument/Option を呼ぶのが定石（B008は誤検出）
+"**/cli.py" = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

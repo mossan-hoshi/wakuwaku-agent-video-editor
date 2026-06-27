@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>フレーミング bbox アノテータ</title>
+<style>
+  :root { --bg:#1e1f24; --panel:#2a2c33; --fg:#e6e6e6; --accent:#4ec9b0; --warn:#e0c050; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui,sans-serif; }
+  header { display:flex; gap:12px; align-items:center; padding:8px 14px; background:var(--panel); position:sticky; top:0; }
+  header .grow { flex:1; }
+  button { background:#3a3d46; color:var(--fg); border:1px solid #4a4d56; border-radius:6px; padding:6px 12px; cursor:pointer; }
+  button:hover { background:#454853; }
+  button.primary { background:var(--accent); color:#08120f; border:none; font-weight:600; }
+  button.on { background:#c25b5b; color:#fff; border:none; }
+  .badge { padding:2px 8px; border-radius:10px; font-size:12px; }
+  .badge.ok { background:#23502f; color:#7fe0a0; }
+  .badge.todo { background:#52471f; color:var(--warn); }
+  #wrap { display:flex; height:calc(100vh - 48px); }
+  #stage { flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  canvas { max-width:100%; max-height:100%; cursor:crosshair; background:#000; }
+  aside { width:260px; background:var(--panel); padding:14px; overflow:auto; }
+  aside h3 { margin:0 0 8px; font-size:13px; color:#9aa; text-transform:uppercase; letter-spacing:.5px; }
+  .kv { display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px solid #3a3d46; }
+  .kv span:last-child { color:var(--accent); font-variant-numeric:tabular-nums; }
+  .hint { color:#889; font-size:12px; margin-top:14px; }
+  ul.items { list-style:none; padding:0; margin:8px 0 0; max-height:34vh; overflow:auto; }
+  ul.items li { padding:4px 6px; border-radius:4px; cursor:pointer; display:flex; justify-content:space-between; }
+  ul.items li.cur { background:#3a4150; }
+  ul.items li .dot { color:var(--warn); }
+  ul.items li.done .dot { color:var(--accent); }
+  ul.items li.rejected { color:#9a6a6a; text-decoration:line-through; }
+  ul.items li.rejected .dot { color:#c25b5b; }
+</style>
+</head>
+<body>
+<header>
+  <button id="prev">◀ 前</button>
+  <button id="next">次 ▶</button>
+  <button id="save" class="primary">保存して次へ (S)</button>
+  <button id="nocrop">クロップ無し (C)</button>
+  <button id="reject">不採用 (R)</button>
+  <button id="reset">初期bboxに戻す</button>
+  <span class="grow"></span>
+  <span id="progress" class="badge"></span>
+</header>
+<div id="wrap">
+  <div id="stage"><canvas id="cv"></canvas></div>
+  <aside>
+    <h3>このフレーム</h3>
+    <div class="kv"><span>id</span><span id="m-id">-</span></div>
+    <div class="kv"><span>zoom</span><span id="m-zoom">-</span></div>
+    <div class="kv"><span>posY(px)</span><span id="m-posy">-</span></div>
+    <div class="kv"><span>出力時刻</span><span id="m-time">-</span></div>
+    <div class="kv"><span>種別</span><span id="m-kind">-</span></div>
+    <div class="kv"><span>状態</span><span id="m-state">-</span></div>
+    <h3 style="margin-top:16px">bbox (正規化)</h3>
+    <div class="kv"><span>x0,y0</span><span id="m-xy0">-</span></div>
+    <div class="kv"><span>x1,y1</span><span id="m-xy1">-</span></div>
+    <ul class="items" id="list"></ul>
+    <div class="hint">
+      ・矩形内ドラッグ=移動<br>
+      ・角/辺ハンドル=リサイズ<br>
+      ・空白ドラッグ=新規描画(16:9)<br>
+      ・Ctrl+Z=元に戻す / Ctrl+Shift+Z=やり直し<br>
+      ・←/→=移動(自動保存), S=保存, C=クロップ無し, R=不採用
+    </div>
+  </aside>
+</div>
+<script>
+const API = '';
+let items = [], idx = 0, img = new Image();
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+let bbox = [0,0,1,1]; // normalized x0,y0,x1,y1
+let noCrop = false;   // クロップ無し（元フレーム全体）
+let rejected = false; // 不採用（学習から除外）
+let dirty = false;    // 未保存の編集あり
+let drag = null; // {mode, handle, sx, sy, orig}
+let undoStack=[], redoStack=[], pendingUndo=null; // 各フレーム単位のundo/redo
+function snapshot(){ return {bbox:bbox.slice(), noCrop, rejected}; }
+function applyState(s){ bbox=s.bbox.slice(); noCrop=s.noCrop; rejected=s.rejected; dirty=true; refreshNoCrop(); refreshReject(); draw(); }
+function commitUndo(pre){ undoStack.push(pre); if(undoStack.length>200) undoStack.shift(); redoStack=[]; }
+function undo(){ if(!undoStack.length) return; redoStack.push(snapshot()); applyState(undoStack.pop()); }
+function redo(){ if(!redoStack.length) return; undoStack.push(snapshot()); applyState(redoStack.pop()); }
+
+const HANDLE = 8;
+function curr(){ return items[idx]; }
+
+async function load(){
+  items = await (await fetch(API+'/api/dataset')).json();
+  if(!items.length){ document.body.innerHTML='<p style="padding:20px">dataset.json が空です。先に <code>wwedit framing dataset</code> を実行してください。</p>'; return; }
+  show(0);
+}
+function show(i){
+  idx = (i + items.length) % items.length;
+  const it = curr();
+  bbox = it.bbox.slice();
+  noCrop = !!it.no_crop;
+  rejected = !!it.rejected;
+  dirty = false;
+  undoStack=[]; redoStack=[]; pendingUndo=null;  // フレーム切替でhistoryリセット
+  refreshNoCrop();
+  refreshReject();
+  img = new Image();
+  img.onload = draw;
+  img.src = API + '/frames/' + it.image.split('/').pop();
+  document.getElementById('m-id').textContent = it.id;
+  document.getElementById('m-zoom').textContent = it.zoom;
+  document.getElementById('m-posy').textContent = it.pos_y_px;
+  document.getElementById('m-time').textContent = it.out_start_s+'–'+it.out_end_s+'s';
+  document.getElementById('m-kind').textContent = it.has_media ? '媒体' : '調整';
+  updateState();
+  renderList();
+}
+function refreshNoCrop(){
+  document.getElementById('nocrop').classList.toggle('on', noCrop);
+}
+function refreshReject(){
+  document.getElementById('reject').classList.toggle('on', rejected);
+}
+function updateState(){
+  const it = curr();
+  const el = document.getElementById('m-state');
+  const tag = rejected ? '<span class="badge todo">不採用</span>'
+    : (noCrop ? '<span class="badge ok">クロップ無し</span>'
+    : (it.corrected ? '<span class="badge ok">補正済</span>' : '<span class="badge todo">未補正</span>'));
+  el.innerHTML = tag;
+  const done = items.filter(x=>x.corrected||x.rejected).length;
+  const rej = items.filter(x=>x.rejected).length;
+  document.getElementById('progress').textContent = `${done}/${items.length} 確認済 (不採用${rej})`;
+  document.getElementById('m-xy0').textContent = bbox[0].toFixed(3)+', '+bbox[1].toFixed(3);
+  document.getElementById('m-xy1').textContent = bbox[2].toFixed(3)+', '+bbox[3].toFixed(3);
+}
+function renderList(){
+  const ul = document.getElementById('list'); ul.innerHTML='';
+  items.forEach((it,i)=>{
+    const li = document.createElement('li');
+    li.className = (i===idx?'cur ':'') + (it.rejected?'rejected':(it.corrected?'done':''));
+    li.innerHTML = `<span>${it.id}</span><span class="dot">${it.rejected?'✕':'●'}</span>`;
+    li.onclick = ()=>go(i);
+    ul.appendChild(li);
+  });
+}
+// canvas layout
+let layout = {ox:0, oy:0, w:0, h:0};
+function draw(){
+  const stage = document.getElementById('stage');
+  const maxW = stage.clientWidth, maxH = stage.clientHeight;
+  const ar = img.width/img.height;
+  let w = maxW, h = w/ar;
+  if(h>maxH){ h=maxH; w=h*ar; }
+  cv.width=w; cv.height=h; layout={ox:0,oy:0,w,h};
+  ctx.clearRect(0,0,w,h);
+  ctx.drawImage(img,0,0,w,h);
+  // bbox
+  const [x0,y0,x1,y1] = bbox.map((v,i)=> i%2? v*h : v*w);
+  ctx.strokeStyle='#4ec9b0'; ctx.lineWidth=2;
+  ctx.strokeRect(x0,y0,x1-x0,y1-y0);
+  ctx.fillStyle='rgba(78,201,176,0.12)'; ctx.fillRect(x0,y0,x1-x0,y1-y0);
+  // handles
+  ctx.fillStyle='#4ec9b0';
+  for(const [hx,hy] of handlePoints()) ctx.fillRect(hx-HANDLE/2,hy-HANDLE/2,HANDLE,HANDLE);
+  // GT 参照オーバーレイ（読み取り専用・予測確認モード）。橙の破線。
+  const gt = curr() && curr().gt_bbox;
+  if(gt){
+    const [gx0,gy0,gx1,gy1] = gt.map((v,i)=> i%2? v*h : v*w);
+    ctx.save();
+    ctx.strokeStyle='#e0a050'; ctx.lineWidth=2; ctx.setLineDash([7,5]);
+    ctx.strokeRect(gx0,gy0,gx1-gx0,gy1-gy0);
+    ctx.setLineDash([]);
+    ctx.fillStyle='#e0a050'; ctx.font='12px system-ui';
+    ctx.fillText('GT', gx0+3, gy0+13);
+    ctx.fillStyle='#4ec9b0';
+    ctx.fillText('予測', x0+3, y0+13);
+    ctx.restore();
+  }
+  updateState();
+}
+function handlePoints(){
+  const [x0,y0,x1,y1]=pxBox();
+  const mx=(x0+x1)/2, my=(y0+y1)/2;
+  return [[x0,y0],[mx,y0],[x1,y0],[x1,my],[x1,y1],[mx,y1],[x0,y1],[x0,my]];
+}
+function pxBox(){ const {w,h}=layout; return [bbox[0]*w,bbox[1]*h,bbox[2]*w,bbox[3]*h]; }
+function hitHandle(mx,my){
+  const pts=handlePoints();
+  for(let i=0;i<pts.length;i++){ if(Math.abs(mx-pts[i][0])<=HANDLE && Math.abs(my-pts[i][1])<=HANDLE) return i; }
+  return -1;
+}
+cv.addEventListener('mousedown',e=>{
+  if(noCrop) return;  // クロップ無しは編集不可
+  pendingUndo=snapshot();  // 編集前の状態を控える（mouseupでhistory確定）
+  const r=cv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+  const hi=hitHandle(mx,my);
+  const [x0,y0,x1,y1]=pxBox();
+  if(hi>=0){ drag={mode:'resize',handle:hi}; }
+  else if(mx>x0&&mx<x1&&my>y0&&my<y1){ drag={mode:'move',sx:mx,sy:my,orig:bbox.slice()}; }
+  else { // new box
+    drag={mode:'new',sx:mx,sy:my}; bbox=[mx/layout.w,my/layout.h,mx/layout.w,my/layout.h];
+  }
+});
+cv.addEventListener('mousemove',e=>{
+  if(!drag) return;
+  const r=cv.getBoundingClientRect(); let mx=e.clientX-r.left, my=e.clientY-r.top;
+  const {w,h}=layout; mx=Math.max(0,Math.min(w,mx)); my=Math.max(0,Math.min(h,my));
+  const nx=mx/w, ny=my/h;
+  // 手動編集はアスペクト16:9固定。フレームが16:9なので正規化座標では「幅=高さ」が16:9。
+  const norm = a => [Math.min(a[0],a[2]),Math.min(a[1],a[3]),Math.max(a[0],a[2]),Math.max(a[1],a[3])];
+  if(noCrop){ /* クロップ無しは編集不可（全画面固定） */ }
+  else if(drag.mode==='move'){
+    const dx=(mx-drag.sx)/w, dy=(my-drag.sy)/h; const o=drag.orig;
+    let bw=o[2]-o[0], bh=o[3]-o[1];
+    let x0=Math.max(0,Math.min(1-bw,o[0]+dx)), y0=Math.max(0,Math.min(1-bh,o[1]+dy));
+    bbox=[x0,y0,x0+bw,y0+bh];
+  } else if(drag.mode==='new'){
+    const sxN=drag.sx/w, syN=drag.sy/h;
+    const s=Math.max(Math.abs(nx-sxN), Math.abs(ny-syN));   // 正方形(=16:9)
+    const sgx=nx>=sxN?1:-1, sgy=ny>=syN?1:-1;
+    bbox=norm([sxN,syN,sxN+sgx*s,syN+sgy*s]);
+  } else if(drag.mode==='resize'){
+    const hp=drag.handle; // 0=TL,1=T,2=TR,3=R,4=BR,5=B,6=BL,7=L
+    let [x0,y0,x1,y1]=bbox; const cx=(x0+x1)/2, cy=(y0+y1)/2;
+    if([0,2,4,6].includes(hp)){            // 角: 対角を固定し正方形維持
+      const ax=[0,6].includes(hp)?x1:x0, ay=[0,2].includes(hp)?y1:y0;
+      const s=Math.max(Math.abs(nx-ax),Math.abs(ny-ay));
+      const sgx=nx>=ax?1:-1, sgy=ny>=ay?1:-1;
+      bbox=norm([ax,ay,ax+sgx*s,ay+sgy*s]);
+    } else if(hp===1||hp===5){             // 上下辺: 高さ→幅を導出, 横中心維持
+      const ay=hp===1?y1:y0; const s=Math.abs(ny-ay); const sgy=ny>=ay?1:-1;
+      bbox=norm([cx-s/2,ay,cx+s/2,ay+sgy*s]);
+    } else {                               // 左右辺(3,7): 幅→高さ導出, 縦中心維持
+      const ax=hp===7?x1:x0; const s=Math.abs(nx-ax); const sgx=nx>=ax?1:-1;
+      bbox=norm([ax,cy-s/2,ax+sgx*s,cy+s/2]);
+    }
+  }
+  if(!noCrop) dirty=true;
+  draw();
+});
+window.addEventListener('mouseup',()=>{
+  if(drag && pendingUndo && JSON.stringify(pendingUndo.bbox)!==JSON.stringify(bbox)){
+    commitUndo(pendingUndo);  // 実際に変化したらundo履歴に確定
+  }
+  pendingUndo=null; drag=null;
+});
+
+async function save(advance=true){
+  const it=curr();
+  await fetch(API+'/api/item/'+encodeURIComponent(it.id),{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({bbox:bbox, corrected:true, no_crop:noCrop, rejected:rejected})
+  });
+  it.bbox=bbox.slice(); it.corrected=true; it.no_crop=noCrop; it.rejected=rejected;
+  if(advance) show(idx+1); else { updateState(); renderList(); }
+}
+function toggleNoCrop(){
+  commitUndo(snapshot());          // トグルもundo対象
+  noCrop = !noCrop;
+  if(noCrop) bbox=[0,0,1,1];      // クロップ無し=元フレーム全体
+  dirty = true;
+  refreshNoCrop(); draw();
+}
+function toggleReject(){
+  commitUndo(snapshot());
+  rejected = !rejected;
+  dirty = true;
+  refreshReject(); draw();
+}
+// 編集があれば移動前に自動保存（未保存で消える事故を防ぐ）
+async function go(i){
+  if(dirty) await save(false);
+  show(i);
+}
+document.getElementById('save').onclick=()=>save(true);
+document.getElementById('nocrop').onclick=toggleNoCrop;
+document.getElementById('reject').onclick=toggleReject;
+document.getElementById('prev').onclick=()=>go(idx-1);
+document.getElementById('next').onclick=()=>go(idx+1);
+document.getElementById('reset').onclick=()=>{ bbox=curr().bbox.slice(); noCrop=!!curr().no_crop; rejected=!!curr().rejected; dirty=false; refreshNoCrop(); refreshReject(); draw(); };
+window.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT') return;
+  const ctrl = e.ctrlKey || e.metaKey;
+  if(ctrl && (e.key==='z'||e.key==='Z')){ e.preventDefault(); if(e.shiftKey) redo(); else undo(); return; }
+  if(ctrl && (e.key==='y'||e.key==='Y')){ e.preventDefault(); redo(); return; }  // Ctrl+Y も redo
+  if(ctrl) return;  // 他のCtrl操作は素通し
+  if(e.key==='ArrowLeft') go(idx-1);
+  else if(e.key==='ArrowRight') go(idx+1);
+  else if(e.key==='s'||e.key==='S') save(true);
+  else if(e.key==='c'||e.key==='C') toggleNoCrop();
+  else if(e.key==='r'||e.key==='R') toggleReject();
+});
+window.addEventListener('beforeunload', e=>{ if(dirty){ e.preventDefault(); e.returnValue=''; } });
+window.addEventListener('resize',draw);
+load();
+</script>
+</body>
+</html>
