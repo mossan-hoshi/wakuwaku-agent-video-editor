@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.uv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# 作業データ・収録ごとの中間成果（リポジトリに含めない）
+/data/
+*.mp4
+*.m4a
+*.wav
+*.mp3
+*.png
+*.jpg
+
+# 秘匿情報
+.env
+secrets/
+*.token.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# node (webapp/frontend)
+node_modules/
+dist/
