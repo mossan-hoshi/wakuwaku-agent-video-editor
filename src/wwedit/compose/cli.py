@@ -33,6 +33,10 @@ def video(
     max_ranges: int = typer.Option(0, help="先頭N区間だけ合成（0=全部・動作確認用）"),
     post_unit_index: int = typer.Option(
         -1, help="投稿単位[K]。0始まりのindexでその単位の区間だけ合成（-1=収録まるごと）"),
+    eyecatch: bool = typer.Option(
+        False, help="[H] 各チャプター冒頭に2秒アイキャッチ(generative art＋ジングル)を挿入"),
+    eyecatch_jingle_dir: Path = typer.Option(
+        None, help="アイキャッチのジングル群フォルダ（章ごとに seed でランダム選曲）"),
 ) -> None:
     """EDL の keep区間を連結した mp4 を書き出す（無音カット適用済み）。
 
@@ -106,6 +110,29 @@ def video(
     )
     size_mb = result.stat().st_size / 1e6
     rprint(f"[green]合成完了[/]: {result} ({size_mb:.1f}MB)")
+
+    if eyecatch:
+        if not edl.chapters:
+            rprint("[yellow]chapters が無いのでアイキャッチを挿入できません（先に chapter）[/]")
+        else:
+            from wwedit.compose.eyecatch_insert import insert_eyecatches
+
+            ec_out = result.with_name(result.stem + "_ec.mp4")
+            rprint(f"[dim]アイキャッチ挿入中（全章冒頭・ジングル={eyecatch_jingle_dir}）...[/]")
+            try:
+                ec_path, ch_lines = insert_eyecatches(
+                    result, edl, ec_out, ranges=sel_ranges,
+                    jingle_dir=eyecatch_jingle_dir, crf=crf, preset=preset,
+                )
+            except (RuntimeError, ValueError) as e:
+                rprint(f"[red]アイキャッチ挿入失敗[/]: {e}")
+                raise typer.Exit(1) from e
+            # 補正済みチャプター行（概要欄はこれを --chapter で渡す）
+            cl_path = ec_path.with_name(ec_path.stem + "_chapters.txt")
+            cl_path.write_text("\n".join(ch_lines) + "\n", encoding="utf-8")
+            ec_mb = ec_path.stat().st_size / 1e6
+            rprint(f"[green]アイキャッチ挿入完了[/]: {ec_path} ({ec_mb:.1f}MB・{len(ch_lines)}章)\n"
+                   f"  補正チャプター → {cl_path}（概要欄はこの時刻を使う）")
 
 
 @compose_app.command()

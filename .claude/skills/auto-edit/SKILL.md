@@ -31,9 +31,9 @@ CLI呼び出し・LLM工程の判断/dispatch・目視QA・尺ループ・継続
 6. `[CLI]`+**chapter-detector スキル** **chapter** `screen-text`→`prepare`→（detector）→`apply`→`youtube`。
 7. `[CLI]`+**caption-summarizer スキル(Sonnet)** **subtitle** `prepare-captions`→（summarizer）→`apply-captions`。
 8. **=== G2 編集確認 ===** `edit serve <edl>`（httptools破損中は `http="h11"`）。手修正完了後 `framing harvest-corrections <edl>`。
-9. `[CLI]` **compose video** `--framed --subtitles --audio speakers --bgm "<G1で選んだジャンル>"` → 本編mp4。
-10. **intro-builder スキル**: イントロ生成（台本/服装非重複/尺/QAは intro-builder が判断）。生成物を見せ**自動で次へ**。`publish intro-compose` 未実装なら仕上げ合成はskip/手動と明示。
-11. `[CLI]` **[L]**: 章からサムネ文言を作り `publish thumbnail --top/--bottom`／タイトル・要約を書き `publish description`。見せて**自動で次へ**。
+9. `[CLI]` **compose video** `--framed --subtitles --audio speakers --bgm "<G1で選んだジャンル>"` **`--eyecatch --eyecatch-jingle-dir <Videos/.../jingle>`** → 本編mp4（`*_ec.mp4`）。**[H]** で全チャプター冒頭に2秒のgenerative-artアイキャッチ＋ランダムジングルを挿入。**挿入で章時刻がずれるので `*_ec_chapters.txt`（補正済み）を概要欄に使う**。
+10. **intro-builder スキル**: イントロ生成（台本/服装非重複/尺/QAは intro-builder が判断）。生成物を見せ**自動で次へ**。`publish intro-compose` で仕上げ合成（本編先頭に連結）。
+11. `[CLI]` **[L]**: 章からサムネ文言を作り `publish thumbnail --top/--bottom`／タイトル・要約を書き `publish description`。**アイキャッチ挿入時は `publish description --chapter-lines-file <*_ec_chapters.txt>`** で補正章時刻を反映。見せて**自動で次へ**。
 12. **=== G3 投稿前 最終承認 ===** 完成動画＋サムネ＋概要欄を提示→承認後 `publish youtube --video <mp4>`（token有れば `--no-dry-run`、無ければ dry-run で JSON 生成し G1 に差し戻し）。
 
 ## 1収録→複数投稿（post-unit ループ）
