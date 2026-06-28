@@ -21,6 +21,8 @@ def description(
     out: Path = typer.Option(None, help="出力（既定 data/<date>/youtube_description.txt）"),
     post_unit_index: int = typer.Option(
         -1, help="投稿単位[K]。その単位の章で概要欄を作る（-1=収録まるごと）"),
+    chapter_lines_file: Path = typer.Option(
+        None, help="章行を明示上書き（[H]アイキャッチ挿入時の補正章行 *_ec_chapters.txt）"),
 ) -> None:
     """YouTube 概要欄テキストを組み立てる（タイトル＋要約＋チャプター＋定型フッター）。
 
@@ -34,7 +36,11 @@ def description(
     if not edl.chapters:
         rprint("[yellow]chapters がありません（先に chapter prepare/apply）[/]")
     ch_lines = None
-    if post_unit_index >= 0:
+    if chapter_lines_file and chapter_lines_file.exists():
+        # [H] アイキャッチ挿入で章時刻がずれた場合の補正済み章行を優先採用
+        ch_lines = [ln for ln in chapter_lines_file.read_text(
+            encoding="utf-8").splitlines() if ln.strip()]
+    elif post_unit_index >= 0:
         from wwedit.edl.postunit import post_unit_chapter_lines
 
         ch_lines = post_unit_chapter_lines(edl, post_unit_index)
@@ -202,6 +208,42 @@ def intro_compose(
         rprint(f"[red]{e}[/]")
         raise typer.Exit(1) from e
     rprint(f"[green]イントロ完成[/]: {p}（FullHD＋右上ロゴ/{disp}＋ピンク字幕＋ジングル）")
+
+
+@publish_app.command()
+def eyecatch(
+    title: str = typer.Option(..., help="アイキャッチ中央に出すタイトル（章名等）"),
+    out: Path = typer.Option(..., help="出力 mp4（2秒・generative art＋ジングル）"),
+    seed: int = typer.Option(0, help="見た目を決める seed（章ごとに変える＝呼び出し側）"),
+    jingle: Path = typer.Option(None, help="ジングル音源（直接指定）"),
+    jingle_dir: Path = typer.Option(
+        None, help="ジングル群のディレクトリ（seed でランダム選曲）"),
+    duration: float = typer.Option(2.0, help="尺(秒)"),
+) -> None:
+    """[H] チャプター冒頭アイキャッチ生成（**決定的**・generative art＋ランダムジングル）。
+
+    ビジュアルは ffmpeg 生成フィルタ（seed で毎回変化・curated 配色）。`--jingle-dir` 指定時は
+    seed でその中から1曲を選ぶ。選曲方針/seed の割り当ては呼び出し側（compose/スキル）の判断。
+    """
+    import random
+
+    from wwedit.publish.eyecatch import generate_eyecatch
+
+    jpath = jingle
+    if jpath is None and jingle_dir and jingle_dir.exists():
+        cands = sorted(
+            p for p in jingle_dir.rglob("*")
+            if p.suffix.lower() in (".wav", ".mp3", ".m4a", ".flac", ".ogg"))
+        if cands:
+            jpath = random.Random(seed).choice(cands)
+    try:
+        p = generate_eyecatch(title, out, seed=seed,
+                              jingle=str(jpath) if jpath else None, duration=duration)
+    except RuntimeError as e:
+        rprint(f"[red]{e}[/]")
+        raise typer.Exit(1) from e
+    jn = jpath.name if jpath else "（無音）"
+    rprint(f"[green]アイキャッチ[/]: {p}（seed={seed} {duration}s ジングル={jn}）")
 
 
 @publish_app.command()

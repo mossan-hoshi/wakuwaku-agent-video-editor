@@ -214,8 +214,10 @@ subtitle_speaker_colors / bgm / post_units`。
 - OCR=**RapidOCR-ONNX**（PaddleはWindows DLL衝突で不可）。STT=WhisperX。動き=codecサイズ（PySceneDetectではない）。
 - テスト: `uv run pytest -q`（**160緑**）。lint: `uv run ruff check src tests`。editor.html のJSは `node --check` で構文検証。
 - **[M4] publish群**: `publish/{description,thumbnail,youtube,domoai}.py`＋`publish/cli.py`。GEMINI(nano banana)＝secret manager→.env。DomoAI罠は§5[G]。
-- ⚠️ **httptools 破損**: セッション中の `uv sync` が起動中サーバにロックされ httptools の `.pyd` 入替に失敗→`HttpRequestParser` 欠落で
-  uvicorn が無応答（listenするが返らない）。**当面 webapp は `uvicorn.run(..., http="h11")`（純Pythonパーサ）で起動**。要 httptools 再インストール修復。
+- ✅ **httptools 修復済(2026-06-28)**: `uv pip install --force-reinstall --no-deps httptools` で `HttpRequestParser` 復活＝webapp は通常 uvicorn で起動可（h11 回避はもう不要・h11 でも可）。
+  〔教訓〕起動中サーバが `.pyd` をロックしていると `uv sync` で入替失敗→無応答になる。サーバ停止中に再インストールする。
+- **運用セットアップ状況(2026-06-28)**: `WWEDIT_YT_CLIENT_ID/SECRET/REFRESH_TOKEN` を secret manager(`GOOGLE_PUBLISHING_*`)→.env に設定済＋`google-api-python-client`/`google-auth-oauthlib` 導入済＝**実YouTube投稿(`publish youtube --no-dry-run`)が可能**。
+  WhisperX(STT)は**このvenvに直import**（`transcribe/stt.py`）＝新規収録の文字起こしには要導入（既存 `data/2026-06-04` は処理済）。RapidOCR/torch/timm は導入済。
 - 検証用: 本番EDLは触らず **コピーEDL**で編集検証（コピー先は揮発するTempスクラブパッド＝再起動で消える。再生成は `cp data/2026-06-04/edl.json <tmp>`）。
 - レンダ結果プレビューは**静的mp4不要**になった（§7・canvas動的合成）。古い `long_v10*.mp4` 依存は撤廃。
 
@@ -271,13 +273,15 @@ subtitle_speaker_colors / bgm / post_units`。
 6. `[CLI][LLM]` **subtitle**: `prepare-captions` → caption-summarizerスキル(Sonnet) → `apply-captions`。
 7. `[手]` **edit serve** で確認・手修正（任意）→ `[CLI]` **`framing harvest-corrections`** → 定期 `[GPU]` **`crop-train --extra-root data/framing_corrections`**（継続学習）。
 8. `[CLI]` **compose video** `--framed --subtitles --audio speakers --bgm "D:/Users/sackn/Videos/wakuwaku/assets/sounds/bgms/<genre>"`
-   → 本編 framed＋字幕＋整音＋BGM(-34LUFS) の mp4。（BGMジャンルは収録に合わせ選ぶ）
+   `--eyecatch --eyecatch-jingle-dir "D:/Users/sackn/Videos/wakuwaku/.../jingle"`
+   → 本編 framed＋字幕＋整音＋BGM(-34LUFS)＋**[H]全章冒頭2秒アイキャッチ**(generative art＋ランダムジングル) の mp4(`*_ec.mp4`)。
+   挿入で章時刻がずれるので **`*_ec_chapters.txt`(補正済み)** を概要欄へ回す。（BGMジャンルは収録に合わせ選ぶ）
 9. `[skill][外部][GPU]` **[G] イントロ** ＝ **`intro-builder` スキル**を実行（Claudeが台本/服装非重複/尺/QAを判断し下記CLIを順に叩く）:
    `[CLI]` SBV2起動(github venv) → `publish tts`(台本→wav・実尺≤10s確認・超過なら台本詰めて再実行) →
    `publish character-image`(`<id>_a*.webp`参照＋同一性・季節/服装は[[intro-generation-log]]で非重複・目視QA) →
    `publish lipsync`(DomoAI・seconds=音声尺・**$0.06/秒**・QA後のみ) → `publish intro-compose`(720p→FullHD＋ロゴ/名＋ピンク字幕全文＋ジングル)。
    **1収録に投稿が2件以上(`post_units`≥2)なら手順9以降を `--post-unit-index N` で単位ごとにループ**（上流は1回）。
-10. `[CLI][LLM]` **[L] サムネ/概要欄**: `publish thumbnail --top/--bottom`（背景=nano banana）／`publish description`（title・summaryはLLM別生成→`--*-file`）。
+10. `[CLI][LLM]` **[L] サムネ/概要欄**: `publish thumbnail --top/--bottom`（背景=nano banana）／`publish description`（title・summaryはLLM別生成→`--*-file`）。**アイキャッチ挿入時は `--chapter-lines-file <*_ec_chapters.txt>`** で補正章時刻を反映。
 11. `[CLI][外部]` **[K] 投稿**: `publish youtube --video <mp4>`（既定dry-run）→ キー有りで `--no-dry-run`。`publish/fcpxml` は記録/緊急手修正用。
 
 ---
@@ -291,6 +295,7 @@ subtitle_speaker_colors / bgm / post_units`。
 - 🟢 **イントロ仕上げ合成＝実装済(2026-06-28)**: `publish intro-compose`（`publish/intro_compose.py`）＝720p→FullHD＋左上ロゴ/キャラ名(PILバッジ)＋**ピンク二重枠字幕で台本全文**(`ass.py` intro)＋ジングル(-20dB amix)。実機で `noa_intro.mp4`→FullHD完成イントロ生成・目視OK。字幕折返しは `wrap_script`（句点優先）＝微調整余地。
 - 🟢 **1収録→複数投稿(post-unit)＝本番対応済(2026-06-28)**: `edl/postunit.py`（`post_unit_ranges`=kept∩単位スパン／`post_unit_chapter_lines`=単位内出力時刻／`n_post_units`）。
   `compose video --post-unit-index N`（`compose_kept` に `ranges` override・字幕/framing/BGMも単位内整合）／`chapter youtube --post-unit-index`／`publish description --post-unit-index`（出力は `*_p<N>`）。`auto-edit` は手順9以降を post_units ループ（上流1回）。テスト `tests/test_postunit.py`。
+- 🟢 **[H] チャプター冒頭アイキャッチ＝実装済(2026-06-28)**: 全章冒頭に2秒の generative-art クリップ（`publish/eyecatch.py`＝ffmpeg `gradients`動勾配＋`geq`流動プラズマ(softlight)＋微ノイズ＋ヴィネット・**seedで毎回見た目が変化**・curated配色10種・タイトルカード＋右下ロゴ）＋**章ごとseedでランダム選曲したジングル**を挿入。`compose/eyecatch_insert.py` が本編mp4を章境界で分割しconcatフィルタで再連結（本編filtergraphは非改変）、挿入で生じる章時刻ずれは `shifted_chapter_lines`（純関数）で補正し `*_ec_chapters.txt` に出力。`compose video --eyecatch --eyecatch-jingle-dir`／`publish eyecatch`／`publish description --chapter-lines-file`。実機スモークで尺18s(本編12+EC3×2)・章補正一致を検証。テスト `tests/test_eyecatch_insert.py`・`test_publish.py`。
 - 🟡 **マスター・オーケストレータ＝`auto-edit` スキル実装済（2026-06-28）**: 収録→投稿を §8 RUNBOOK 通りに自動駆動し、CLI呼び出し・LLM工程のスキル/サブエージェントdispatch・目視QA・継続学習をClaude側で完結、止まるのは**判断ゲート3点（G1素材/キー不足・G2編集確認・G3投稿前承認）**のみ（サムネ/イントロは生成して見せ自動進行）。→ 残=**新規収録1本での end-to-end 通し検証**（各工程CLI/スキルは個別検証済）。
 - 🟡 **LLM工程のdispatch**: filler/chapter/caption は専用スキル（filler-selector/chapter-detector/caption-summarizer）＋`auto-edit` が順に dispatch する設計。概要欄title/summary・サムネ文言・イントロ台本は `auto-edit`/`intro-builder` 内でClaudeが書く。＝手起動依存は解消（通し検証は残）。
 - 🟡 **手作業の文言**: サムネtop/bottom・イントロ文章は人手（自動生成の口は要LLM接続）。

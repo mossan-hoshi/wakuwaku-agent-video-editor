@@ -125,6 +125,28 @@ def test_parse_emphasis():
     assert parse_emphasis("ふつう", (1, 2, 3)) == [("ふつう", (255, 255, 255))]
 
 
+def test_eyecatch_ink_colors_valid():
+    from wwedit.publish.eyecatch import INK_COLORS
+
+    assert len(INK_COLORS) >= 5  # ロゴ配色（多色）
+    for col in INK_COLORS:
+        assert len(col) == 3
+        assert all(0 <= ch <= 255 for ch in col)  # RGB 0..255
+
+
+def test_eyecatch_title_card(tmp_path):
+    # ffmpeg を使わない PIL 部分（タイトルカード）だけ検証
+    from wwedit.publish.eyecatch import _title_card
+
+    out = _title_card("FlashVSR 動画超解像", tmp_path / "t.png", w=640, h=360)
+    assert out.exists()
+    from PIL import Image
+
+    im = Image.open(out)
+    assert im.size == (640, 360)
+    assert im.mode == "RGBA"  # 透過（背景に重畳するため）
+
+
 def test_build_video_resource():
     body = build_video_resource("タイトル", "概要欄テキスト", privacy="unlisted")
     assert body["snippet"]["title"] == "タイトル"
