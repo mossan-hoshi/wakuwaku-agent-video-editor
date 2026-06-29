@@ -166,6 +166,30 @@ def test_edit_chapter_title_and_move(tmp_path: Path):
     assert ch.chapter_title == "オープニング" and ch.start_at == 6.0 and ch.is_required is True
 
 
+def test_edit_postunit_title(tmp_path: Path):
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    r = c.post("/api/postunit/0", json={"title": "改題"})
+    assert r.status_code == 200
+    assert load_edl(edl_path).post_units[0].title == "改題"
+
+
+def test_edit_postunit_span_recomputes_ranges(tmp_path: Path):
+    # 始端ドラッグ: start=12 → kept∩[12,20] = s2(12-20) のみ（s0 4-8 は範囲外）
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    r = c.post("/api/postunit/0", json={"start": 12.0})
+    assert r.status_code == 200
+    rg = load_edl(edl_path).post_units[0].ranges
+    assert len(rg) == 1
+    assert rg[0].start == pytest.approx(12.0) and rg[0].end == pytest.approx(20.0)
+    # 始端を 4 に戻す → kept∩[4,20] = s0(4-8)+s2(12-20) の2区間に復活
+    c.post("/api/postunit/0", json={"start": 4.0})
+    rg2 = load_edl(edl_path).post_units[0].ranges
+    assert len(rg2) == 2
+    assert rg2[0].start == pytest.approx(4.0)
+
+
 def test_edit_framing_rejects_bad_range(tmp_path: Path):
     c = _client(_edl(tmp_path))
     assert c.post("/api/framing/0", json={"start": 9.0, "end": 5.0}).status_code == 400

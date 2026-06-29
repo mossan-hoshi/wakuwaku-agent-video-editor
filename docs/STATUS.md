@@ -29,7 +29,7 @@ subtitle_speaker_colors / bgm / post_units`。
 
 1. **ingest**: 取り込み・正規化（`ingest` group）。
 2. **transcribe**: WhisperX で word単位STT → `edl.utterances`（`transcribe`）。
-3. **cut**: 無音/フィラーカット → `edl.segments`（`cut`。無音=動的閾値、フィラー=filler-selectorスキル）。
+3. **cut**: 無音/フィラー/NGワードカット → `edl.segments`（`cut`。無音=`auto-vad --refine`動的閾値、フィラー=filler-selectorスキル、NGワード=`cut ngwords`＝.env `WWEDIT_CUT_NGWORDS` に言及した発話をまるごとカット）。
 4. **framing**:
    - `framing scenes <edl>`: codecサイズ動き検出で安定区間 → `edl.framing`（static / pending）。
    - `framing classify-motion <edl>`: pending を オプティカルフローで loading(画面切替) / pending(動画) に分類。
@@ -267,7 +267,7 @@ subtitle_speaker_colors / bgm / post_units`。
    `uv sync`（extras は複数同時指定）。GEMINIキーは secret manager から（[[external-assets-and-keys]]）。`UV_LINK_MODE=copy`。
 1. `[CLI]` **ingest** 取り込み・正規化。
 2. `[CLI][GPU]` **transcribe**（WhisperX word単位）→ `utterances`。
-3. `[CLI][LLM]` **cut**（無音=動的閾値・フィラー=filler-selectorスキル）→ `segments`。
+3. `[CLI][LLM]` **cut**（無音=`auto-vad --refine`動的閾値・フィラー=filler-selectorスキル・NGワード=`cut ngwords`＝.env `WWEDIT_CUT_NGWORDS` 言及発話まるごと）→ `segments`。
 4. `[CLI][GPU軽]` **framing**: `scenes` → `classify-motion` → **`crop-apply`**（学習済`crop_model.pt`でbbox書戻し）。保守運用は `assign`。
 5. `[CLI][LLM]` **chapter**: `screen-text`(OCR) → `prepare` → chapter-detectorスキル → `apply` → `youtube`(章txt)。
 6. `[CLI][LLM]` **subtitle**: `prepare-captions` → caption-summarizerスキル(Sonnet) → `apply-captions`。

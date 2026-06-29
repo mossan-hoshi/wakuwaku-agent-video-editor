@@ -197,3 +197,34 @@ def fillers_apply(
     if compare_fcpxml:
         cut = [(s.start, s.end) for s in edl.segments if s.invalid]
         _report_compare(edl, cut)
+
+
+@cut_app.command("ngwords")
+def ngwords(
+    edl_path: Path = typer.Argument(..., help="対象 EDL（transcribe 済み）"),
+    refine: bool = typer.Option(True, help="切れ目を音量の谷へスナップ"),
+) -> None:
+    """NGワード(.env の WWEDIT_CUT_NGWORDS)に言及した発話をまるごとカットする。
+
+    語は PII 同様 .env のみ（コード/リポジトリ非埋め込み）。未設定なら何もしない。
+    どの語に当たったかは秘匿のため出力せず、当たった発話数のみ報告する。
+    """
+    from wwedit.cut.ngwords import apply_ngword_cuts, load_ngwords
+
+    edl = load_edl(edl_path)
+    if not edl.utterances:
+        raise typer.BadParameter("utterances が空（先に transcribe を実行）")
+    terms = load_ngwords()
+    if not terms:
+        rprint("[yellow]NGワード未設定（.env の WWEDIT_CUT_NGWORDS）。何もしません。[/]")
+        return
+    segments, n_matched = apply_ngword_cuts(edl, terms)
+    if n_matched == 0:
+        rprint(f"[dim]NGワード {len(terms)}語: 該当発話なし。[/]")
+        return
+    if refine:
+        segments = _refine_with_energy(segments, edl)
+    edl.segments = segments
+    save_edl(edl, edl_path)
+    rprint(f"[green]NGワードカット[/]: {len(terms)}語で {n_matched} 発話をカット対象に。")
+    _report_cut(edl)

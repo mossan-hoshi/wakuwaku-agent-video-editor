@@ -26,6 +26,7 @@ CutReason = Literal[
     "switch",  # 画面共有切替
     "offtopic",  # 勉強会に無関係（技術雑談は除く）
     "privacy",  # 個人情報（会社名/家族/sakamoto・taniguchi以外の人名/プライベート）
+    "ngword",  # NGワード(.env WWEDIT_CUT_NGWORDS)に言及した発話
     "manual",  # 手動指定
 ]
 

@@ -195,17 +195,23 @@ function buildTimeline(){
     onClick:()=>{ const old=el.dataset.invalid==="true"; editOp(`/api/segment/${el.dataset.seg}`, {invalid:old}, {invalid:!old}); },
     onCommit:(a,b,oa,ob,zone)=>{ const url=`/api/segment/${el.dataset.seg}`;
       if(zone==="l") editOp(url,{start:oa},{start:a}); else editOp(url,{end:ob},{end:b}); }}));
-  // クリック時シーク可否: 既に選択中の同一項目を再クリックした場合はシークしない（冒頭に飛ばさない）
-  const clickSeek=(k,i)=> selKind!==k || selIdx!==i;
+  // クリック時シーク可否: 再生ヘッドが項目区間[s0,s1]の外のときだけ冒頭へシーク。
+  // 既に区間内（選択前の再生位置がその項目内）ならシークせずその位置を保つ。
+  const clickSeek=el=>{ const t=curSrcTime(), a=+el.dataset.s0, b=+el.dataset.s1;
+    return !(t>=a-0.001 && t<=b+0.001); };
   $("tracks").querySelectorAll("[data-sub]").forEach(el=>makeDraggable(el,{edges:true,
-    onClick:()=>selectSub(+el.dataset.sub, clickSeek("sub",+el.dataset.sub)), onCommit:(a,b,oa,ob)=>editOp(`/api/subtitle/${el.dataset.sub}`,{start:oa,end:ob},{start:a,end:b})}));
+    onClick:()=>selectSub(+el.dataset.sub, clickSeek(el)), onCommit:(a,b,oa,ob)=>editOp(`/api/subtitle/${el.dataset.sub}`,{start:oa,end:ob},{start:a,end:b})}));
   $("tracks").querySelectorAll("[data-fr]").forEach(el=>makeDraggable(el,{edges:true,
-    onClick:()=>selectFraming(+el.dataset.fr, clickSeek("fr",+el.dataset.fr)), onCommit:(a,b,oa,ob)=>editOp(`/api/framing/${el.dataset.fr}`,{start:oa,end:ob},{start:a,end:b})}));
-  $("tracks").querySelectorAll("[data-adj]").forEach(el=>el.onclick=()=>selectFraming(+el.dataset.adj, clickSeek("fr",+el.dataset.adj)));
-  // 投稿/章は常にシークしない（タップで冒頭に飛ばさない）
+    onClick:()=>selectFraming(+el.dataset.fr, clickSeek(el)), onCommit:(a,b,oa,ob)=>editOp(`/api/framing/${el.dataset.fr}`,{start:oa,end:ob},{start:a,end:b})}));
+  $("tracks").querySelectorAll("[data-adj]").forEach(el=>el.onclick=()=>selectFraming(+el.dataset.adj, clickSeek(el)));
+  // 章はクリックでシークしない（点マーカー・始端のみドラッグ）
   $("tracks").querySelectorAll("[data-ch]").forEach(el=>makeDraggable(el,{edges:false,
     onClick:()=>selectChapter(+el.dataset.ch, false), onCommit:(a,b,oa)=>editOp(`/api/chapter/${el.dataset.ch}`,{start_at:oa},{start_at:a})}));
-  $("tracks").querySelectorAll("[data-pu]").forEach(el=>el.onclick=()=>selectPostUnit(+el.dataset.pu, false));
+  // 投稿は他項目同様、始端/終端をドラッグで変更可能（本体ドラッグ無し＝選択のみ）
+  $("tracks").querySelectorAll("[data-pu]").forEach(el=>makeDraggable(el,{edges:true, bodyDrag:false,
+    onClick:()=>selectPostUnit(+el.dataset.pu, clickSeek(el)),
+    onCommit:(a,b,oa,ob,zone)=>{ const url=`/api/postunit/${el.dataset.pu}`;
+      if(zone==="l") editOp(url,{start:oa},{start:a}); else editOp(url,{end:ob},{end:b}); }}));
 }
 const pxs=(a,b)=>`left:${54+t2x(a)}px; width:${Math.max(2,t2x(b-a))}px;`;
 function clip(a,b,cls,label,data){ const d=Object.entries(data).map(([k,v])=>`data-${k}="${v}"`).join(" ");

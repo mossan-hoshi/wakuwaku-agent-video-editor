@@ -20,6 +20,7 @@ __all__ = [
     "segments_from_keep",
     "mark_fillers_from_utterances",
     "mark_filler_intervals",
+    "mark_invalid_intervals",
     "filler_intervals_from_chars",
     "build_segments",
     "is_filler",
@@ -191,30 +192,37 @@ def mark_fillers_from_utterances(
         filler_iv = filler_intervals_from_chars(utterances)
     else:
         filler_iv = [(w.start, w.end) for w in words if is_filler(w.text)]
-    return _mark_fillers(segments, filler_iv)
+    return mark_invalid_intervals(segments, filler_iv, reason="filler")
 
 
 def mark_filler_intervals(
     segments: list[Segment], intervals: list[Interval]
 ) -> list[Segment]:
     """明示的なフィラー時間区間（LLM判断由来など）で keep区間を invalid(filler)化する。"""
-    return _mark_fillers(segments, list(intervals))
+    return mark_invalid_intervals(segments, list(intervals), reason="filler")
 
 
-def _mark_fillers(segments: list[Segment], filler_iv: list[Interval]) -> list[Segment]:
-    """keep区間にかかるフィラー区間を切り出して invalid(reason="filler")にする。"""
-    if not filler_iv:
+def mark_invalid_intervals(
+    segments: list[Segment], intervals: list[Interval], *, reason: str = "filler"
+) -> list[Segment]:
+    """keep区間にかかる任意の区間を切り出して invalid(reason=...)化する汎用処理。
+
+    フィラー(reason="filler")・NGワード(reason="ngword")など、LLM/規則由来の
+    「ここを切る」区間を keep区間に重ねるのに共通で使う。invalid区間には触れない。
+    """
+    if not intervals:
         return segments
+    pfx = (reason or "x")[0]  # id接頭辞: filler→f / ngword→n
     out: list[Segment] = []
     idx = 0
     for seg in segments:
         if seg.invalid:
             out.append(seg)
             continue
-        # この keep区間に重なるフィラーで分割
+        # この keep区間に重なるカット区間で分割
         cuts = sorted(
             (max(seg.start, fs), min(seg.end, fe))
-            for fs, fe in filler_iv
+            for fs, fe in intervals
             if fe > seg.start and fs < seg.end
         )
         cursor = seg.start
@@ -223,7 +231,7 @@ def _mark_fillers(segments: list[Segment], filler_iv: list[Interval]) -> list[Se
                 out.append(Segment(id=f"k{idx:04d}", start=cursor, end=cs, invalid=False))
                 idx += 1
             out.append(
-                Segment(id=f"f{idx:04d}", start=cs, end=ce, invalid=True, reason="filler")
+                Segment(id=f"{pfx}{idx:04d}", start=cs, end=ce, invalid=True, reason=reason)
             )
             idx += 1
             cursor = max(cursor, ce)
