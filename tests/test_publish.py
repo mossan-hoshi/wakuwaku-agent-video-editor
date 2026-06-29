@@ -1,7 +1,7 @@
 import pytest
 
 from wwedit.edl.schema import Chapter, Edl, Segment, SourceMedia
-from wwedit.publish.description import AI_DISCLAIMER, build_description
+from wwedit.publish.description import build_description
 from wwedit.publish.youtube import DEFAULT_TAGS, build_video_resource
 
 
@@ -18,34 +18,36 @@ def _edl():
     )
 
 
-def test_build_description_structure():
+def test_build_description_format():
     edl = _edl()
     text = build_description(
-        edl, title="【勉強会】CVPR2026の注目論文",
-        summary="今回はCVPR2026の論文を紹介します。\nFlashVSRやSAM3Dなど。",
-        extra_links=[("発表資料", "https://example.com/slides")],
+        edl, agenda="のべつべ！開発の裏側",
+        hashtags="#個人開発 #生成ai",
+        links=[("発表資料", "https://example.com/slides")],
     )
-    assert text.startswith("【勉強会】CVPR2026の注目論文")
-    assert "今回はCVPR2026の論文を紹介します。" in text
-    # チャプター節（先頭00:00必須）
-    assert "チャプター" in text
-    assert "00:00 開会" in text
-    assert "02:00 CVPR2026概要" in text  # 全区間残存なので source=output
-    # リンク節
-    assert "・発表資料 https://example.com/slides" in text
-    # フッター（AI免責＋チャンネル）
-    assert AI_DISCLAIMER in text
-    assert "@mossan_hoshi" in text
+    # 先頭は Agenda「」
+    assert text.startswith("Agenda「のべつべ！開発の裏側」")
+    # リンクは ラベル→URL
+    assert "発表資料\nhttps://example.com/slides" in text
+    # ハッシュタグ行
+    assert "#個人開発 #生成ai" in text
+    # タイムスタンプ: 00:00 - start + MM:SS - ラベル（00:00章はstartに集約）
+    assert "00:00 - start" in text
+    assert "02:00 - CVPR2026概要" in text
+    assert "00:00 - 開会" not in text  # 00:00章はstartへ集約
+    # 実投稿に無いものは入れない
+    assert "チャプター" not in text
+    assert "チャンネル:" not in text
+    assert "AIが自動生成" not in text
     assert text.endswith("\n")
 
 
-def test_build_description_no_summary_no_links():
+def test_build_description_hashtags_list_and_no_links():
     edl = _edl()
-    text = build_description(edl, title="タイトルのみ", summary="")
-    assert "タイトルのみ" in text
-    assert "チャプター" in text
-    assert "リンク" not in text  # extra_links 無し
-    assert AI_DISCLAIMER in text
+    text = build_description(edl, agenda="テーマ", hashtags=["個人開発", "ai"])
+    assert text.startswith("Agenda「テーマ」")
+    assert "#個人開発 #ai" in text  # # 自動付与
+    assert "https://" not in text  # リンク無し
 
 
 def test_character_ref_and_prompt(tmp_path):

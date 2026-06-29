@@ -51,29 +51,105 @@ def _audio_dur(path: str | Path) -> float:
         return 0.0
 
 
+def _wrap_chars(title: str, font, draw, max_w: float) -> list[str]:
+    """日本語を文字単位で貪欲に折り返す（語境界が無いので幅で改行）。各行は max_w 以下。"""
+    lines: list[str] = []
+    cur = ""
+    for ch in title:
+        if cur and draw.textlength(cur + ch, font=font) > max_w:
+            lines.append(cur)
+            cur = ch
+        else:
+            cur += ch
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+_BREAK_AFTER = set("、。，．・…！？!?）)」』】〉》〕")  # ここの直後で割ると自然
+
+
+def _split2_balanced(title: str, font, draw, max_w: float):
+    """2行に分けて**両行 max_w 以下**かつ左右幅が最も均等になる分割を返す（無ければ None）。
+
+    区切り記号の直後で割れる候補は均等度を少し優遇し、語中の不自然な改行を避ける。
+    """
+    n = len(title)
+    best = None
+    for k in range(1, n):
+        a, b = title[:k], title[k:]
+        wa = draw.textlength(a, font=font)
+        wb = draw.textlength(b, font=font)
+        if wa <= max_w and wb <= max_w:
+            score = abs(wa - wb) - (40 if title[k - 1] in _BREAK_AFTER else 0)
+            if best is None or score < best[0]:
+                best = (score, [a, b])
+    return best[1] if best else None
+
+
+def _fit_title(title: str, draw, max_w: float, max_lines: int = 2):
+    """プレート幅 max_w・最大 max_lines 行に収まる**最大フォント**と行分割を返す。
+
+    長いタイトルでもはみ出さないよう、フォントを段階的に下げて
+    「1行で入る or 2行バランス分割で各行 max_w 以下」になる最大サイズを採用する。
+    """
+    from PIL import ImageFont
+
+    for size in (100, 92, 84, 76, 68, 60, 54, 48, 42, 38):
+        font = ImageFont.truetype(_MEIRYO, size)
+        if draw.textlength(title, font=font) <= max_w:
+            return font, [title], size
+        if max_lines >= 2:
+            sp = _split2_balanced(title, font, draw, max_w)
+            if sp:
+                return font, sp, size
+    # 極端な長さは最小サイズで貪欲折り（行数だけは許容）
+    font = ImageFont.truetype(_MEIRYO, 38)
+    return font, _wrap_chars(title, font, draw, max_w), 38
+
+
 def _title_card(title: str, out_png: Path, *, w: int = 1920, h: int = 1080) -> Path:
-    """中央に**白いプレート**を敷きその上に濃紺タイトル＋ロゴ赤の下線。インク上でも確実に読める。"""
-    from PIL import Image, ImageDraw, ImageFont
+    """中央に**白いプレート**を敷きその上に濃紺タイトル＋ロゴ赤の下線。インク上でも確実に読める。
+
+    タイトルは**プレート幅に収まるよう自動で行折り＋フォント縮小**（最大2行）。長題でもはみ出さない。
+    """
+    from PIL import Image, ImageDraw
 
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    font = ImageFont.truetype(_MEIRYO, 100)
-    tw = int(draw.textlength(title, font=font))
     cx, cy = w // 2, h // 2
-    padx, pady = 64, 46
-    half_w = tw // 2 + padx
-    px0, py0, px1, py1 = cx - half_w, cy - 64 - pady, cx + half_w, cy + 64 + pady
+    padx, pady = 60, 40
+    max_plate_w = int(w * 0.84)          # プレート最大幅（左右に余白）
+    max_text_w = max_plate_w - 2 * padx
+    font, lines, size = _fit_title(title, draw, max_text_w, max_lines=2)
+
+    line_h = int(size * 1.32)
+    # 各行の高さ（アセンダ/ディセンダ込み）で実測
+    asc, desc = font.getmetrics()
+    glyph_h = asc + desc
+    block_h = line_h * (len(lines) - 1) + glyph_h
+    widest = max((draw.textlength(ln, font=font) for ln in lines), default=0)
+    half_w = int(widest) // 2 + padx
+    half_h = block_h // 2 + pady
+    px0, py0, px1, py1 = cx - half_w, cy - half_h, cx + half_w, cy + half_h
     rad = 28
-    # 影（インクからプレートを浮かせる）→ 白プレート（不透明）→ 細い縁
+    # 影 → 白プレート（不透明）→ 細い縁
     draw.rounded_rectangle([px0, py0 + 8, px1, py1 + 8], radius=rad, fill=(20, 18, 40, 70))
     draw.rounded_rectangle([px0, py0, px1, py1], radius=rad, fill=(255, 255, 255, 255))
     draw.rounded_rectangle([px0, py0, px1, py1], radius=rad,
                            outline=(*_TITLE_FILL, 60), width=3)
-    # タイトル（濃紺）
-    draw.text((cx - tw // 2, cy - 64), title, font=font, fill=(*_TITLE_FILL, 255))
-    # アクセント下線（ロゴ赤）
-    draw.rounded_rectangle([cx - tw // 2, cy + 70, cx + tw // 2, cy + 80],
-                           radius=5, fill=(224, 0, 0, 255))
+    # タイトル各行（濃紺・中央寄せ）
+    y = cy - block_h // 2
+    last_w = widest
+    for ln in lines:
+        lw = draw.textlength(ln, font=font)
+        draw.text((cx - lw / 2, y), ln, font=font, fill=(*_TITLE_FILL, 255))
+        y += line_h
+        last_w = lw
+    # アクセント下線（ロゴ赤・最終行の下）
+    uy = cy + block_h // 2 + 12
+    uw = int(last_w) // 2
+    draw.rounded_rectangle([cx - uw, uy, cx + uw, uy + 10], radius=5, fill=(224, 0, 0, 255))
     out_png.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_png)
     return out_png
@@ -292,7 +368,9 @@ def generate_eyecatch(
     cmd += ["-t", f"{duration}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
             "-pix_fmt", "yuv420p"]
     if amap:
-        cmd += ["-c:a", "aac", "-shortest"]
+        # 出力 -t で尺は確定済み。-shortest を併用すると loop画像入力との相互作用で
+        # 音声が 0 サンプル化（AAC Qavg:nan）し無音動画になるため付けない。
+        cmd += ["-c:a", "aac"]
     cmd += [str(out_path)]
 
     proc = _run(cmd)

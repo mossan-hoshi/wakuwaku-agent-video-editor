@@ -66,16 +66,24 @@ def _fmt_ts(t: float) -> str:
 
 
 def shifted_chapter_lines(
-    edl: Edl, ranges: list[TimeRange] | None = None, *, duration: float = 2.0
+    edl: Edl, ranges: list[TimeRange] | None = None, *, duration: float = 2.0,
+    skip_first: bool = True,
 ) -> list[str]:
     """アイキャッチ挿入後の出力時刻に補正したチャプター行（``MM:SS タイトル``）。
 
-    i 番目の章は前に i 個のアイキャッチ（各 ``duration`` 秒）が入るので ``out_at + i×duration``。
-    アイキャッチ自体が章マーカーなので時刻はその開始＝補正後の章頭を指す。先頭は 00:00。
+    各章マーカー = その章のアイキャッチ開始（無い章は本編開始）＝
+    ``out_at + (その章より前に入ったアイキャッチ数)×duration``。
+    ``skip_first`` の時は先頭章にアイキャッチを入れない（イントロが頭に来るため）ので、
+    先頭は 00:00、以降は手前のアイキャッチ数だけずれる。
     """
     bounds, _ = eyecatch_boundaries(edl, ranges, duration=duration)
-    return [f"{_fmt_ts(b['out_at'] + i * duration)} {b['title']}"
-            for i, b in enumerate(bounds)]
+    lines: list[str] = []
+    n_ec_before = 0
+    for i, b in enumerate(bounds):
+        lines.append(f"{_fmt_ts(b['out_at'] + n_ec_before * duration)} {b['title']}")
+        if not (skip_first and i == 0):
+            n_ec_before += 1
+    return lines
 
 
 def _pick_jingle(jingle_dir: Path, seed: int) -> Path | None:
@@ -96,6 +104,7 @@ def insert_eyecatches(
     out_h: int = 1080,
     crf: int = 20,
     preset: str = "medium",
+    skip_first: bool = True,
 ) -> tuple[Path, list[str]]:
     """本編 mp4 の各章境界へアイキャッチを挿入した mp4 を書き出す。
 
@@ -113,26 +122,30 @@ def insert_eyecatches(
     if not bounds:
         raise ValueError("挿入対象の章境界が無い（chapters を確認）")
 
+    # skip_first: 先頭章(out_at≈0)はアイキャッチ無し（イントロが頭に来るため）
+    ec_chapters = [i for i in range(len(bounds))
+                   if not (skip_first and i == 0 and bounds[i]["out_at"] <= 1e-6)]
+    if not ec_chapters:
+        raise ValueError("挿入対象のアイキャッチが無い（先頭以外の章が必要）")
+
     fps = int(round(edl.source.fps or 30)) or 30
     work = Path(tempfile.mkdtemp())
     jdir = Path(jingle_dir) if jingle_dir else None
 
-    # 章ごとにアイキャッチ生成（seed で見た目が変わる・ジングルも seed で選曲）
-    ec_paths: list[Path] = []
-    for b in bounds:
-        seed = seed_base + b["index"]
+    # アイキャッチ生成（対象章のみ）。ffmpeg入力番号 = 生成順に 1..M（0=本編）
+    cmd = [ffmpeg_path(), "-y", "-i", str(main_mp4)]
+    ec_input_of: dict[int, int] = {}
+    for n_ec, i in enumerate(ec_chapters):
+        b = bounds[i]
+        seed = seed_base + i
         jingle = _pick_jingle(jdir, seed) if jdir and jdir.exists() else None
         ec = generate_eyecatch(
-            b["title"], work / f"ec_{b['index']:02d}.mp4",
+            b["title"], work / f"ec_{i:02d}.mp4",
             seed=seed, jingle=str(jingle) if jingle else None,
             duration=duration, out_w=out_w, out_h=out_h, fps=fps,
         )
-        ec_paths.append(ec)
-
-    # 入力: 0=本編 / 1..N=アイキャッチ
-    cmd = [ffmpeg_path(), "-y", "-i", str(main_mp4)]
-    for ec in ec_paths:
         cmd += ["-i", str(ec)]
+        ec_input_of[i] = n_ec + 1
 
     af = ("aresample=48000,aformat=sample_fmts=fltp:"
           "channel_layouts=stereo,asetpts=PTS-STARTPTS")
@@ -142,13 +155,15 @@ def insert_eyecatches(
     edges = [b["out_at"] for b in bounds] + [total]  # 章頭…末尾
     for i in range(len(bounds)):
         lo, hi = edges[i], edges[i + 1]
-        # アイキャッチ i（入力 i+1）
-        chains.append(f"[{i + 1}:v]{vf}[ecv{i}]")
-        chains.append(f"[{i + 1}:a]{af}[eca{i}]")
-        # 本編セグメント i = [lo,hi)
+        # 章 i のアイキャッチ（先頭スキップ章には無い）→ 本編セグメント i = [lo,hi)
+        if i in ec_input_of:
+            inp = ec_input_of[i]
+            chains.append(f"[{inp}:v]{vf}[ecv{i}]")
+            chains.append(f"[{inp}:a]{af}[eca{i}]")
+            order.append(f"[ecv{i}][eca{i}]")
         chains.append(f"[0:v]trim={lo:.3f}:{hi:.3f},{vf}[sv{i}]")
         chains.append(f"[0:a]atrim={lo:.3f}:{hi:.3f},{af}[sa{i}]")
-        order += [f"[ecv{i}][eca{i}]", f"[sv{i}][sa{i}]"]
+        order.append(f"[sv{i}][sa{i}]")
     n = len(order)
     chains.append(f"{''.join(order)}concat=n={n}:v=1:a=1[outv][outa]")
     script = ";\n".join(chains)
@@ -166,4 +181,5 @@ def insert_eyecatches(
     if proc.returncode != 0:
         tail = "\n".join((proc.stderr or "").splitlines()[-20:])
         raise RuntimeError(f"アイキャッチ挿入失敗:\n{tail}")
-    return out_path, shifted_chapter_lines(edl, ranges, duration=duration)
+    return out_path, shifted_chapter_lines(edl, ranges, duration=duration,
+                                           skip_first=skip_first)

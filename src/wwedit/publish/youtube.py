@@ -10,8 +10,6 @@
 
 from __future__ import annotations
 
-import os
-
 # Science & Technology
 DEFAULT_CATEGORY_ID = "28"
 DEFAULT_TAGS = ["勉強会", "AI", "コンピュータビジョン", "論文紹介", "わくわくべんきょ会"]
@@ -49,9 +47,11 @@ def build_video_resource(
 
 def _oauth_credentials():
     """.env の refresh token から認証情報を作る（遅延 import）。無ければ分かるエラー。"""
-    cid = os.environ.get("WWEDIT_YT_CLIENT_ID")
-    secret = os.environ.get("WWEDIT_YT_CLIENT_SECRET")
-    refresh = os.environ.get("WWEDIT_YT_REFRESH_TOKEN")
+    from wwedit.common.env import env_value
+
+    cid = env_value("WWEDIT_YT_CLIENT_ID")
+    secret = env_value("WWEDIT_YT_CLIENT_SECRET")
+    refresh = env_value("WWEDIT_YT_REFRESH_TOKEN")
     missing = [k for k, v in (("WWEDIT_YT_CLIENT_ID", cid),
                               ("WWEDIT_YT_CLIENT_SECRET", secret),
                               ("WWEDIT_YT_REFRESH_TOKEN", refresh)) if not v]

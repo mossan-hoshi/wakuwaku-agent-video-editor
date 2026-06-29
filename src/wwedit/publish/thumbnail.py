@@ -1,8 +1,10 @@
-"""[L] サムネイル生成（nano banana = Gemini ネイティブ画像生成）。
+"""[L] サムネイル生成（nano banana 2 = gemini-3-pro-image 一発生成）。
 
-方針: **AI は背景/キャラの絵だけ生成**（萌え系アニメ寄り・16:9）し、タイトル日本語と
-のべつべ!ロゴは **PIL で後合成**する（モデルは日本語テキストを崩しやすいため）。
-APIキーは `.env: GEMINI_API_KEY` のみ（コード非直書き）。
+**方針（確定）**: サムネは **nano banana 2 で一発生成**する＝キャラ・背景・**日本語タイトル文字まで
+モデルが一括で描く**。キャラ/絵柄は**立ち姿 `<id>_a*.webp` を参照画像**に渡して固定する
+（[[thumbnail-oneshot-nano-banana]]）。nano banana 2 は日本語タイポも崩れにくいので、旧方針の
+「背景だけ生成＋PILで文字を後合成（``compose_banners``/``compose_title_logo``）」は使わない
+（後者は legacy 残置。`parse_emphasis` 等のみ流用可）。APIキーは `.env: GEMINI_API_KEY` のみ。
 
 参考移植元: novtube `gemini_image.go`（`:generateContent`・`X-Goog-Api-Key`・
 `responseModalities:["IMAGE"]`・`imageConfig.aspectRatio/imageSize`・base64応答）。
@@ -12,7 +14,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import urllib.request
 from pathlib import Path
 
@@ -22,7 +23,9 @@ _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:gen
 
 
 def _api_key() -> str:
-    key = os.environ.get("GEMINI_API_KEY")
+    from wwedit.common.env import env_value
+
+    key = env_value("GEMINI_API_KEY")
     if not key:
         raise RuntimeError("GEMINI_API_KEY が .env にありません（secret manager から設定）")
     return key
@@ -78,6 +81,39 @@ def save_image(data: bytes, out_path: str | Path) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(data)
     return out_path
+
+
+def generate_thumbnail(
+    prompt: str,
+    out_path: str | Path,
+    *,
+    char: str | None = "noa",
+    model: str = "gemini-3-pro-image",
+    assets_dir: str | Path | None = None,
+    aspect_ratio: str = "16:9",
+    image_size: str = "2K",
+) -> Path:
+    """サムネを **nano banana 2 で一発生成**して保存する（文字・キャラ・背景を一括描画）。
+
+    ``char`` を指定すると立ち姿 ``<id>_a*.webp`` を参照画像に渡し、絵柄・キャラ同一性を固定する
+    （先頭に同一性維持の制約を付与）。``prompt`` には描画したい日本語タイトル・配色・文字サイズ
+    階層・構図・表情まで含めて記述する（モデルが文字も描く）。空文字キャラなら参照なし。
+    """
+    refs = None
+    full = prompt
+    if char:
+        from wwedit.publish.character import (
+            DEFAULT_ASSETS,
+            IDENTITY_CONSTRAINT,
+            resolve_character_ref,
+        )
+
+        ref = resolve_character_ref(char, assets_dir or DEFAULT_ASSETS)
+        refs = [("image/webp", ref.read_bytes())]
+        full = IDENTITY_CONSTRAINT + prompt.strip()
+    data = generate_image(full, model=model, aspect_ratio=aspect_ratio,
+                          image_size=image_size, reference_images=refs)
+    return save_image(data, out_path)
 
 
 _MEIRYO_BOLD = r"C:\Windows\Fonts\meiryob.ttc"

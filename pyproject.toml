@@ -56,6 +56,12 @@ framing-train = [
     "numpy>=1.26",
     "pillow>=10.0",
 ]
+# [K] YouTube Data API（投稿 videos.insert ＋ 自チャンネルの概要欄取得 readonly）。
+# OAuth は scripts/reauth_youtube.py で read+upload 再認証（[[youtube-api-scopes]]）。
+youtube = [
+    "google-api-python-client>=2.0",
+    "google-auth-oauthlib>=1.0",
+]
 
 [project.scripts]
 wwedit = "wwedit.cli:app"

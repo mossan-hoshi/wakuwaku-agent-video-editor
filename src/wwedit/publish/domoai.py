@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import time
 import urllib.request
 from pathlib import Path
@@ -30,7 +29,9 @@ _MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 
 
 def _key() -> str:
-    k = os.environ.get("DOMOAI_API_KEY")
+    from wwedit.common.env import env_value
+
+    k = env_value("DOMOAI_API_KEY")
     if not k:
         raise RuntimeError("DOMOAI_API_KEY が .env にありません")
     return k
