@@ -15,20 +15,22 @@ publish_app = typer.Typer(help="投稿パッケージ（概要欄/タイトル�
 @publish_app.command()
 def description(
     edl_path: Path = typer.Argument(..., help="対象 EDL（chapters が必要）"),
-    title: str = typer.Option("", help="動画タイトル（未指定は --title-file か仮見出し）"),
-    title_file: Path = typer.Option(None, help="タイトルを書いたテキスト（LLM生成等）"),
-    summary_file: Path = typer.Option(None, help="本文要約テキスト（LLM生成・複数行可）"),
+    agenda: str = typer.Option("", help="Agenda「」のテーマ（未指定は --agenda-file）"),
+    agenda_file: Path = typer.Option(None, help="Agendaテーマのテキスト（LLM生成）"),
+    hashtags: str = typer.Option("", help="ハッシュタグ行（例 '#個人開発 #生成ai #aicoding'）"),
+    links_file: Path = typer.Option(
+        None, help="関連リンク（各行 'ラベル<TAB>URL'。タブが無ければ最後の空白で分割）"),
     out: Path = typer.Option(None, help="出力（既定 data/<date>/youtube_description.txt）"),
     post_unit_index: int = typer.Option(
         -1, help="投稿単位[K]。その単位の章で概要欄を作る（-1=収録まるごと）"),
     chapter_lines_file: Path = typer.Option(
         None, help="章行を明示上書き（[H]アイキャッチ挿入時の補正章行 *_ec_chapters.txt）"),
 ) -> None:
-    """YouTube 概要欄テキストを組み立てる（タイトル＋要約＋チャプター＋定型フッター）。
+    """YouTube 概要欄を**チャンネル実フォーマット**で組み立てる。
 
-    タイトル/要約は内容依存なので **LLM で別途生成して** `--title-file`/`--summary-file` で渡す
-    （コスト規律：本文を主ループに載せない）。本コマンドは EDL のチャプターと合体させるだけ。
-    `--post-unit-index N` で1収録の N 番目の投稿の概要欄（単位内の章・時刻）。
+    形式: ``Agenda「テーマ」`` → 関連リンク(任意) → ``#タグ`` → ``00:00 - start`` 以下の
+    タイムスタンプ。要約/AI免責/チャンネルURL/タイトル再掲は**入れない**（実投稿に無い）。
+    タイトルは動画 snippet 側で別途付ける。`--post-unit-index N` で単位内の章・時刻。
     """
     from wwedit.publish.description import build_description
 
@@ -45,70 +47,56 @@ def description(
 
         ch_lines = post_unit_chapter_lines(edl, post_unit_index)
 
-    ttl = title
-    if not ttl and title_file and title_file.exists():
-        ttl = title_file.read_text(encoding="utf-8").strip()
-    if not ttl:
-        chs = sorted(edl.chapters, key=lambda c: c.start_at) if edl.chapters else []
-        first = chs[0].chapter_title if chs else ""
-        ttl = f"【勉強会】{first}".strip() or "わくわくべんきょ会"
+    agenda_text = agenda or (
+        agenda_file.read_text(encoding="utf-8").strip()
+        if agenda_file and agenda_file.exists() else "")
+    if not agenda_text:
+        raise typer.BadParameter("--agenda か --agenda-file が必要（Agenda「」のテーマ）")
 
-    summary = ""
-    if summary_file and summary_file.exists():
-        summary = summary_file.read_text(encoding="utf-8").strip()
+    links: list[tuple[str, str]] = []
+    if links_file and links_file.exists():
+        for ln in links_file.read_text(encoding="utf-8").splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            label, _, url = (ln.partition("\t") if "\t" in ln else ln.rpartition(" "))
+            if label and url:
+                links.append((label.strip(), url.strip()))
 
-    text = build_description(edl, title=ttl, summary=summary, chapter_lines=ch_lines)
+    text = build_description(edl, agenda=agenda_text, links=links or None,
+                             hashtags=hashtags or None, chapter_lines=ch_lines)
     default = (
         f"youtube_description_p{post_unit_index}.txt" if post_unit_index >= 0
         else "youtube_description.txt")
     out_path = out or (edl_path.parent / default)
     out_path.write_text(text, encoding="utf-8")
     n_ch = len(ch_lines) if ch_lines is not None else len(edl.chapters or [])
-    rprint(f"[green]概要欄[/]: {out_path}（タイトル/要約/チャプター{n_ch}/フッター）"
-           f"{'' if summary else '  ※要約未指定＝--summary-file推奨'}")
+    rprint(f"[green]概要欄[/]: {out_path}（Agenda/{'リンク' if links else '—'}/"
+           f"{'#タグ' if hashtags else '—'}/タイムスタンプ{n_ch}）")
 
 
 @publish_app.command()
 def thumbnail(
     edl_path: Path = typer.Argument(..., help="対象 EDL（出力先ディレクトリの決定に使用）"),
-    top: str = typer.Option(..., help="上帯（トピック）。`[語]`=黄強調。例 [CVPR2026] 最新AI論文"),
-    bottom: str = typer.Option("", help="下帯テキスト（フック）。`[語]`=強調色(赤)"),
-    prompt: str = typer.Option("", help="背景アートのプロンプト（空=チャンネル傾向の既定）"),
-    art: Path = typer.Option(None, help="既存の背景アートを使う（指定時は生成しない＝無課金）"),
+    prompt: str = typer.Option(
+        ..., help="サムネ全体のプロンプト（描画する日本語タイトル・文字サイズ階層・配色・"
+                  "構図・キャラの表情/ポーズ・背景まで含めて記述。文字もモデルが描く）"),
+    char: str = typer.Option("noa", help="参照する立ち姿キャラID（絵柄/キャラ固定）。空で参照なし"),
     model: str = typer.Option(
-        "gemini-2.5-flash-image", help="画像モデル（gemini-3-pro-image で高品質）"
-    ),
+        "gemini-3-pro-image", help="画像モデル（既定=nano banana 2＝日本語タイポも崩れにくい）"),
     out: Path = typer.Option(None, help="出力PNG（既定 data/<date>/thumbnail.png）"),
 ) -> None:
-    """[L] サムネ生成（チャンネル傾向: ゆる×AIイラスト背景＋上下太字バナー）。
+    """[L] サムネ生成（**nano banana 2 一発生成**）。
 
-    背景は nano banana（ゆる×AI・16:9・文字なし）、上下の太字バナー（`[語]`=赤/黄強調）と
-    ロゴは PIL で後合成（モデルの日本語文字崩れ回避）。`--art` で既存背景を使えば**無課金**。
+    キャラ・背景・**日本語タイトル文字まで一括でモデルが描く**。``--char`` の立ち姿
+    ``<id>_a*.webp`` を参照に絵柄/キャラ同一性を固定。旧来の「背景だけ生成＋PIL帯合成」は廃止。
     """
-    from wwedit.publish.thumbnail import (
-        DEFAULT_ART_PROMPT,
-        DEFAULT_MODEL,
-        compose_banners,
-        generate_image,
-        save_image,
-    )
+    from wwedit.publish.thumbnail import generate_thumbnail
 
-    edl_dir = edl_path.parent
-    out_path = out or (edl_dir / "thumbnail.png")
-    art_path = art
-    if art_path is None:
-        rprint(f"[dim]背景アート生成中（{model}・課金あり）...[/]")
-        data = generate_image(
-            prompt or DEFAULT_ART_PROMPT, model=model or DEFAULT_MODEL,
-            aspect_ratio="16:9", image_size="2K",
-        )
-        art_path = edl_dir / "thumbnail_art.png"
-        save_image(data, art_path)
-        rprint(f"[dim]背景アート → {art_path}[/]")
-
-    logo = Path(__file__).resolve().parents[3] / "assets" / "logo" / "nobetube_logo.png"
-    compose_banners(art_path, top, bottom, out_path, logo_path=logo if logo.exists() else None)
-    rprint(f"[green]サムネ[/]: {out_path}（背景{'既存' if art else '生成'}＋上下バナー＋ロゴ）")
+    out_path = out or (edl_path.parent / "thumbnail.png")
+    rprint(f"[dim]サムネ一発生成中（{model}・参照={char or 'なし'}・課金あり）...[/]")
+    generate_thumbnail(prompt, out_path, char=char or None, model=model)
+    rprint(f"[green]サムネ[/]: {out_path}（nano banana 2 一発生成・文字込み）")
 
 
 @publish_app.command()

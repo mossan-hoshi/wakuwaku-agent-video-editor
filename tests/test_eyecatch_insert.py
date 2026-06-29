@@ -36,10 +36,17 @@ def test_boundaries_drop_tail_chapter():
     assert "終端" not in [b["title"] for b in bounds]
 
 
-def test_shifted_chapter_lines_offsets():
-    # i 番目の章は前に i 個のアイキャッチ(各2秒)→ out_at + i*2
+def test_shifted_chapter_lines_offsets_skip_first():
+    # 既定 skip_first=True: 先頭章はアイキャッチ無し→手前のEC数だけずれる
     lines = shifted_chapter_lines(_edl(), duration=2.0)
-    assert lines[0] == "00:00 開会"          # 0 + 0*2
+    assert lines[0] == "00:00 開会"          # EC無し
+    assert lines[1] == "02:00 本題"          # 120 + 0*2（手前のEC 0個）
+    assert lines[2] == "05:02 まとめ"        # 300 + 1*2 = 302（手前のEC 1個）
+
+
+def test_shifted_chapter_lines_no_skip():
+    # skip_first=False: 全章にEC→ out_at + i*2（従来挙動）
+    lines = shifted_chapter_lines(_edl(), duration=2.0, skip_first=False)
     assert lines[1] == "02:02 本題"          # 120 + 1*2 = 122
     assert lines[2] == "05:04 まとめ"        # 300 + 2*2 = 304
 
@@ -52,6 +59,6 @@ def test_shifted_chapter_lines_hms():
     ]
     edl.segments = [Segment(id="s0", start=0.0, end=7200.0, invalid=False)]
     edl.source.duration_s = 7200.0
-    lines = shifted_chapter_lines(edl, duration=2.0)
+    lines = shifted_chapter_lines(edl, duration=2.0)  # skip_first 既定
     assert lines[0] == "00:00 A"
-    assert lines[1] == "1:00:02 B"  # 3600 + 1*2 = 3602 → H:MM:SS
+    assert lines[1] == "1:00:00 B"  # 3600 + 0*2（先頭EC無し）→ H:MM:SS

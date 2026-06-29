@@ -187,10 +187,10 @@ subtitle_speaker_colors / bgm / post_units`。
   **既定 dry-run でキー無しでもリクエストJSONを検証生成**（本番 `youtube_upload_request.json` 確認済）。
   実投稿(`--no-dry-run`)は **.env の WWEDIT_YT_CLIENT_ID/SECRET/REFRESH_TOKEN ＋ google-api-python-client が必要**（遅延import・無ければ手順提示で停止）。
 - **[L] サムネ/概要欄**: ✅ **両方実装済**。
-  - 概要欄=`publish description <edl>`（タイトル＋要約＋`youtube_chapter_lines`＋AI免責＋チャンネル・LLM別生成を`--*-file`で）。本番生成済。
-  - **サムネ=`publish thumbnail <edl> --top "[CVPR2026] 最新AI論文" --bottom "[動画超解像]・[3D復元]を一気に解説！"`**（`publish/thumbnail.py`）。
-    **実投稿サムネの傾向に準拠**（@mossan_hoshi のサムネ8枚を実取得・分析）= **テキスト主役の上下太字バナー（`[語]`で赤/黄強調・極太縁取り）＋中央=ゆる×AIイラスト（ロボ/論文/3D/動画モチーフ・ちいかわ系）**。
-    高コントラスト・ブランドカラー無し・下品でなく内容アピール（20〜50代男性向け）。**萌えアニメ娘案は撤回**。
+  - 概要欄=`publish description <edl> --agenda "<テーマ>" --hashtags "#…" [--links-file] --chapter-lines-file <*_ec_chapters.txt>`。**実投稿フォーマット準拠**（2026-06-29 確定）＝`Agenda「」`→関連リンク→`#タグ`→`00:00 - start` 以下 `MM:SS - ラベル`。**要約文/AI免責/チャンネルURL/タイトル再掲は付けない**（旧独自フォーマットは廃止）。既存概要欄はYouTube Data API(readonly)で取得し分析（[[youtube-description-format]] [[youtube-api-scopes]]）。タイトルは `【 <…> # NN わく枠べんきょ会】`。
+  - **サムネ=`publish thumbnail <edl> --char noa --prompt "<文字・配色・構図・表情まで記述>"`**（`publish/thumbnail.py: generate_thumbnail`）。
+    **方針確定（2026-06-29 ユーザー指示）= nano banana 2(gemini-3-pro-image) 一発生成**。キャラ(乃亜の立ち姿`<id>_a*.webp`を参照でスタイル/同一性固定)・背景・**日本語タイトル文字まで一括でモデルが描く**（gemini-3-pro-image は日本語タイポも崩れにくい）。文字サイズ階層・強調色もプロンプトで指定。
+    **旧「背景だけ生成＋PIL上下帯合成」は廃止**（`compose_banners`/`compose_title_logo` は legacy 残置）。[[thumbnail-oneshot-nano-banana]]。
     背景は nano banana（`DEFAULT_ART_PROMPT`）、テキスト/ロゴは PIL 後合成（日本語文字崩れ回避）。`GEMINI_API_KEY` は secret manager(GCP `cosmic-talent-450413-f9`)→.env 設定済。`--art` で既存背景なら無課金。既定 gemini-2.5-flash-image（gemini-3-pro-image で高品質）。
 - **[E] 専用クロップモデル**: ✅ 学習完了・床超え・**CLI化完了**（`framing crop-train`/`crop-apply`・§2）。製品反映は `compose --framed`。
   残=上積みのみ（解像度↑/解凍ブロック増/疑似ラベル/DINOv3）。
