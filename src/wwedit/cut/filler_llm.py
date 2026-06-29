@@ -33,6 +33,11 @@ _FILLER_RE = re.compile(
 # 文脈として前後に見せる文字数
 _CTX = 18
 
+# フィラー語の最大長(秒)。WhisperX は長音記号「ー」を後続の無音まで引き伸ばして整列する
+# ことがあり（実測: 「うーん」が 24s 等）、その end をそのまま採ると実発話を巻き込んで切る。
+# 実際のフィラーは長くても 1.5s 程度なので、start からこの長さで打ち切る（音響スナップは別途）。
+_MAX_FILLER_S = 1.5
+
 
 @dataclass
 class FillerCandidate:
@@ -61,13 +66,16 @@ def extract_candidates(utterances: list[Utterance]) -> list[FillerCandidate]:
         for m in _FILLER_RE.finditer(s):
             i, j = m.start(), m.end()
             ctx = s[max(0, i - _CTX) : i] + "【" + s[i:j] + "】" + s[j : j + _CTX]
+            start = chars[i].start
+            # 長音記号の整列引き伸ばし対策: フィラーは短いので頭から上限で打ち切る
+            end = min(chars[j - 1].end, start + _MAX_FILLER_S)
             cands.append(
                 FillerCandidate(
                     id=cid,
                     speaker=u.speaker,
                     text=s[i:j],
-                    start=chars[i].start,
-                    end=chars[j - 1].end,
+                    start=start,
+                    end=end,
                     context=ctx,
                 )
             )

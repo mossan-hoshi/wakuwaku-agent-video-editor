@@ -83,6 +83,8 @@ class ChapterNew(BaseModel):
 
 class PostUnitEdit(BaseModel):
     title: str | None = None
+    start: float | None = None  # 投稿スパン始端（kept∩[start,end]で区間再導出）
+    end: float | None = None    # 投稿スパン終端
 
 
 class MergeDir(BaseModel):
@@ -428,11 +430,32 @@ def create_editor_app(edl_path: str | Path, preview_path: str | Path | None = No
         if not (0 <= idx < len(pus)):
             raise HTTPException(404, f"post_unit {idx} not found")
         p = pus[idx]
-        before = p.title
+        before = {"title": p.title,
+                  "start": min((r.start for r in p.ranges), default=0.0),
+                  "end": max((r.end for r in p.ranges), default=0.0)}
         if payload.title is not None:
             p.title = payload.title
+        if payload.start is not None or payload.end is not None:
+            # スパン[start,end]を変更し、その範囲内の kept 区間で ranges を再導出する
+            # （compose は kept∩span を使うので島構造はこれで一貫する）。
+            from wwedit.edl.schema import TimeRange
+
+            cur_lo = min((r.start for r in p.ranges), default=0.0)
+            cur_hi = max((r.end for r in p.ranges), default=edl.source.duration_s)
+            lo = float(payload.start) if payload.start is not None else cur_lo
+            hi = float(payload.end) if payload.end is not None else cur_hi
+            if hi < lo:
+                lo, hi = hi, lo
+            p.ranges = [
+                TimeRange(start=max(r.start, lo), end=min(r.end, hi))
+                for r in edl.kept_ranges()
+                if min(r.end, hi) > max(r.start, lo) + 1e-9
+            ]
         save_edl(edl, edl_path)
-        _log({"type": "postunit_edit", "idx": idx, "before": before, "after": p.title})
+        _log({"type": "postunit_edit", "idx": idx, "before": before,
+              "after": {"title": p.title,
+                        "start": min((r.start for r in p.ranges), default=0.0),
+                        "end": max((r.end for r in p.ranges), default=0.0)}})
         return {"ok": True, "title": p.title}
 
     @app.post("/api/framing/{idx}")

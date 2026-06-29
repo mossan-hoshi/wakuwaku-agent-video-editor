@@ -26,7 +26,7 @@ CLI呼び出し・LLM工程の判断/dispatch・目視QA・尺ループ・継続
 1. **G1 前提チェック**: `.env`キー・extras同期・SBV2素材・BGMフォルダ存在を確認。**BGMジャンルを選んでもらう**。足りない物だけ G1 で確認。
 2. `[CLI]` **ingest** → `data/<date>/edl.json`。
 3. `[CLI][GPU]` **transcribe**（VRAM確認）。
-4. `[CLI]`+**filler-selector スキル** **cut**（無音=動的閾値／フィラー取捨）。
+4. `[CLI]`+**filler-selector スキル** **cut**: `cut auto-vad --refine`（無音=VAD＋動的エネルギー床。`cut auto`は非動的なので使わない＝[[cut-auto-vs-autovad-dynamic]]）→ `fillers-prepare`→filler-selector→`fillers-apply`（フィラー取捨）→ **`cut ngwords`**（.env `WWEDIT_CUT_NGWORDS` の語に言及した発話をまるごとカット。未設定なら無動作＝安全側）。
 5. `[CLI][GPU軽]` **framing** `scenes`→`classify-motion`→`crop-apply`（学習済モデル）。
 6. `[CLI]`+**chapter-detector スキル** **chapter** `screen-text`→`prepare`→（detector）→`apply`→`youtube`。
 7. `[CLI]`+**caption-summarizer スキル(Sonnet)** **subtitle** `prepare-captions`→（summarizer）→`apply-captions`。
