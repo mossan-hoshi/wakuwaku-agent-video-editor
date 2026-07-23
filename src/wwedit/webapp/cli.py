@@ -25,7 +25,10 @@ def serve(
 
     from wwedit.webapp.editor import create_editor_app
 
+    # http="h11": Windows で httptools(uvicorn[standard]既定)が proactor の
+    # ConnectionResetError(WinError 10054)でサーバごとクラッシュするため、純Pythonの
+    # h11 パーサに固定する（接続リセットに頑健＝エディタが落ちない）。
     uvicorn.run(
         create_editor_app(edl_path, preview_path=preview),
-        host=host, port=port, log_level="warning",
+        host=host, port=port, log_level="warning", http="h11",
     )

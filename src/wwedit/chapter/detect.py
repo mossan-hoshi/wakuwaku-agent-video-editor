@@ -108,6 +108,7 @@ def apply_decisions(edl: Edl, decisions_path: str | Path) -> Edl:
                 is_required=bool(c.get("is_required", True)),
                 chapter_title=str(c.get("title", "")).strip(),
                 section_title=(c.get("section_title") or None),
+                speaker=str(c.get("speaker", "")).strip(),
             )
         )
     chapters.sort(key=lambda c: c.start_at)

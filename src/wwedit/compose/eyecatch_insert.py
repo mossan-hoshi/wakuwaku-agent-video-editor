@@ -41,21 +41,22 @@ def eyecatch_boundaries(
     rgs = ranges if ranges is not None else edl.kept_ranges()
     total = sum(r.duration for r in rgs)
     chs = sorted(edl.chapters, key=lambda c: c.start_at)
+    # 各章の出力開始秒（0..total にクランプ）。i==0 の特別扱いはしない。
+    pts = [(min(max(_src_to_out(rgs, c.start_at), 0.0), total), c) for c in chs]
     out: list[dict] = []
-    seen: set[float] = set()
-    for i, c in enumerate(chs):
-        ot = 0.0 if i == 0 else _src_to_out(rgs, c.start_at)
-        if ot < -1e-6 or ot >= total - 1e-6:
-            continue  # 範囲外 / 末尾（後ろに本編が無い）はアイキャッチ不要
-        key = round(ot, 2)
-        if key in seen:
+    for j, (ot, c) in enumerate(pts):
+        oe = pts[j + 1][0] if j + 1 < len(pts) else total
+        # 尺ゼロ（カットで潰れた章／末尾に本編が無い章）は捨て、その位置で実際に流れる
+        # 後続の章を残す（例: 冒頭カット時は intro 章でなく実映の次章がそこを担当）。
+        if oe - ot <= 1e-3:
             continue
-        seen.add(key)
         out.append({
             "out_at": ot,
             "title": c.chapter_title or f"チャプター{len(out) + 1}",
             "index": len(out),
         })
+    if out and out[0]["out_at"] > 1e-6:
+        out[0]["out_at"] = 0.0  # 先頭章は 00:00 にスナップ
     return out, total
 
 

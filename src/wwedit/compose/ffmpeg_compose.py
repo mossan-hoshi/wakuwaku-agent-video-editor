@@ -416,6 +416,8 @@ def compose_kept(
     out_h: int = 1080,
     overwrite: bool = True,
     ranges: list | None = None,
+    chapter_ribbon: bool = False,
+    ribbon_date: str = "",
 ) -> Path:
     """EDL の keep区間を連結した mp4 を出力する。
 
@@ -502,6 +504,37 @@ def compose_kept(
             run_cwd = str(ass_dir)
             script = f"{script};\n[outv]ass={ass_file.name}[outvs]"
             vmap = "[outvs]"
+
+    # チャプターリボン（最上位・左上に張り付く2段リボン）: 章ごとに話者色で色分け。
+    # 各章のPNG(フルフレーム透過)を出力タイムラインの区間に enable で被せる（非破壊）。
+    if chapter_ribbon and edl.chapters:
+        from wwedit.compose.chapter_ribbon import (
+            chapter_ribbon_intervals, render_ribbon_png, resolve_speaker_schemes,
+        )
+
+        ivs, _tot = chapter_ribbon_intervals(edl, ranges)
+        if ivs:
+            schemes = resolve_speaker_schemes(edl)
+            rib_dir = Path(tempfile.mkdtemp())
+            prev = vmap[1:-1]  # 角括弧を外す
+            rib_chains: list[str] = []
+            for k, iv in enumerate(ivs):
+                png = rib_dir / f"rib_{k:02d}.png"
+                render_ribbon_png(
+                    ribbon_date, iv["title"], png,
+                    scheme=schemes.get(iv["speaker"]), out_w=out_w, out_h=out_h,
+                )
+                tmp_files.append(str(png))
+                idx = sum(1 for a in cmd if a == "-i")
+                cmd += ["-loop", "1", "-i", str(png)]  # 静止PNGを無限フレーム化して区間で被せる
+                nxt = "outvr" if k == len(ivs) - 1 else f"rb{k}"
+                rib_chains.append(
+                    f"[{prev}][{idx}:v]overlay=0:0:eof_action=pass:"
+                    f"enable='between(t,{iv['out_start']:.3f},{iv['out_end']:.3f})'[{nxt}]"
+                )
+                prev = nxt
+            script = f"{script};\n" + ";\n".join(rib_chains)
+            vmap = f"[{prev}]"
 
     # BGM（本編下に -20dB 目安でダッキング・最後に薄く敷く）。元音声 [outa] と amix。
     # bgm が複数曲なら同ジャンル連続再生のため1本のプレイリストwavへ連結してから敷く。

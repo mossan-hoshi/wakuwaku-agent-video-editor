@@ -37,6 +37,8 @@ def video(
         False, help="[H] 各チャプター冒頭に2秒アイキャッチ(generative art＋ジングル)を挿入"),
     eyecatch_jingle_dir: Path = typer.Option(
         None, help="アイキャッチのジングル群フォルダ（章ごとに seed でランダム選曲）"),
+    chapter_ribbon: bool = typer.Option(
+        False, help="左上に収録日＋章名の2段リボンを常時表示（章ごとに話者色で色分け）"),
 ) -> None:
     """EDL の keep区間を連結した mp4 を書き出す（無音カット適用済み）。
 
@@ -103,10 +105,16 @@ def video(
         f"bgm={bgm_label}@{f'{target:g}LUFS' if target is not None else f'{bgm_gain_db:g}dB'}"
         f" → {out_path}"
     )
+    ribbon_date = ""
+    if chapter_ribbon:
+        from wwedit.compose.chapter_ribbon import format_rec_date
+
+        ribbon_date = format_rec_date(edl.recording_dir or edl_path.parent.name)
     result = compose_kept(
         edl, out_path, crf=crf, preset=preset, audio=audio,
         framed=framed, subtitles=subtitles, bgm=bgm_path, bgm_gain_db=bgm_gain_db,
         bgm_target_lufs=target, max_ranges=n, ranges=sel_ranges,
+        chapter_ribbon=chapter_ribbon, ribbon_date=ribbon_date,
     )
     size_mb = result.stat().st_size / 1e6
     rprint(f"[green]合成完了[/]: {result} ({size_mb:.1f}MB)")

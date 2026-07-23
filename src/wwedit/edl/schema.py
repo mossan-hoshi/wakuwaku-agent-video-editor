@@ -107,6 +107,10 @@ class Chapter(BaseModel):
     section_title: str | None = Field(
         None, description="セクション開始チャプターのみに付与"
     )
+    speaker: str = Field(
+        "", description="その章を主に担当している話者（左上リボンの色分けに使う・"
+        "chapter-detector が章の会話全体から判断）"
+    )
 
 
 class FramingRegion(BaseModel):
