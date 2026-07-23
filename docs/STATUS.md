@@ -307,3 +307,16 @@ subtitle_speaker_colors / bgm / post_units`。
 **結論（2026-06-28 更新）**: **ターンキー化のアーキテクチャは概ね揃った**＝`auto-edit` 司令塔スキルが §8 RUNBOOK を自動駆動し、判断ゲート3点以外はClaude側で完結（CLI＋4スキル＋サブエージェント）。
 残るは **新規収録1本での end-to-end 通し検証**のみ（個別工程＋イントロ仕上げ＋post-unit分割は実装・検証済だが、`auto-edit` で頭から1本通したことはまだ無い）。次の新規収録が来たら `auto-edit` 実走で確証すれば、「最初に `auto-edit` に投げる→判断ゲート以外は自動」が実運用で立つ。
 （残ポリッシュ: イントロ字幕の折返し最適化・BGMセクション別ジャンル切替・no_crop二頭ヘッド等は品質上積みで運用ブロッカーではない。）
+
+---
+
+## 10. 実走で判明した環境現実（2026-07-16・初の新規収録 end-to-end 実走）
+
+`auto-edit` を新規収録1本(`data/2026-07-16`)で頭から通した。**G3(投稿承認)手前まで自動到達**（本編`final.mp4`＝イントロ＋本編・サムネ・概要欄・dry-run完成）。詳細な再開手順は **`data/2026-07-16/RUN_STATUS.md`** に集約（このファイルは恒久的な環境事実のみ抜粋）。
+
+- ⚠️ **背景Bashタスクがこのマシン/セッションで一斉killされる**: `run_in_background` は数分でstatus=killed（負荷ゼロのgrep監視ループも同時に死ぬ＝OOMではなく刈り取り）。**重い工程はフォアグラウンド(timeout≤600s)で回す**。**実壁時計**: 本編base compose=**506s**（ffmpeg encodeは3.66xだが起動/BGM整音のオーバーヘッド込みで実質2.8x・**600s制限にかなり近い＝要注意**）、アイキャッチ挿入=**304s**。分割して各々600s以内に収めた。transcribeも背景では4回killされ、フォアグラウンド faster-whisper(約8分)で完走。
+- ⚠️ **RAM 17GB・空き3〜4GB＋ユーザーのpiper学習(GPU)並走で WhisperX large-v3 がOS強制終了**。→ **`transcribe run --backend faster-whisper --compute-type int8_float16`** に切替えて完走（アライメントモデル不要でRAM小）。副作用: faster-whisperは日本語1文字トークン化で `cut fillers-prepare` が**候補0件**（フィラーカット無し＝過剰カット無しの安全側）。RAM/VRAM確保できる時はWhisperXが本命のまま。ユーザーのGPUジョブは絶対killしない（重処理前に `nvidia-smi`＋空きRAM確認）。
+- ⚠️ **SBV2 dub_local 合成サーバ(`tool/dub_local/server.py` :8123) がディスク上に存在しない**（novtube作業ツリーが空＝`publish tts`/`aivis.py` は前提サーバ不在で不可）。→ 代替=**SBV2 Python API 直叩き**（`data/2026-07-16/sbv2_direct_synth.py` 参照。github SBV2 venv python・model_assets/noa・style=`normal`・JP-Extra・BERTローカル）。**名前の漢字はG2Pで読めず脱落するのでTTS用テキストはひらがな**（「乃亜」→「のあ」）。字幕表示は漢字でOK。
+- ⚠️ **novtube → `novtube-voicebox` にリネーム**。キャラ素材/mascot.mdは `C:/Users/sackn/github/novtube-voicebox/web/...`。`character.py`/`thumbnail.py` は環境変数 **`WWEDIT_NOVTUBE_ASSETS=C:/Users/sackn/github/novtube-voicebox/web/assets`** で参照先差し替えが要る（既定は旧空パス`github/novtube/web/assets`）。noaフルアート参照=`noa_a-BZYVLRjH.webp`。
+- ⚠️ **YouTube認証(readonly)が `RefreshError: credentials do not contain the necessary fields` で失敗**。`--no-dry-run` 実投稿前に検証（env値の空/scope/token）。必要なら `scripts/reauth_youtube.py` 再認証。dry-run(認証不要)は通過。
+- ℹ️ **アイキャッチ挿入は `compose --eyecatch` を丸ごと再実行せずに、既存本編mp4へ `compose.eyecatch_insert.insert_eyecatches(...)` を直接適用可**（base再エンコードを省ける）。イントロと本編の連結CLIは無く手動（concat demuxer・**相対パスはconcatファイルの所在dir基準**・msys絶対パス`/d/...`はffmpeg不可・音声フォーマットを本編48k/stereoに揃える）。

@@ -106,9 +106,11 @@
 </div>
 <script>
 let PXPS = 7, D = null, mode = "src", inP = null, outP = null, dragging = false;
-let revRAF = null, fwdRAF = null, fwdRate = 1, revRate = 1, tickerLast = 0;
+let revRAF = null, fwdRAF = null, fwdRate = 1, revRate = 1, tickerLast = 0, _lastT = -1;
 let selKind = null, selIdx = null, undoStack = [], redoStack = [], saveTmr = null, snap = true;
 const vid = document.getElementById("vid"), rcv = document.getElementById("rcv");
+// 倍速再生でも声のピッチを保つ（本人の声色のままタイムストレッチ）。ベンダー接頭辞も併記。
+vid.preservesPitch = vid.mozPreservesPitch = vid.webkitPreservesPitch = true;
 const $ = id => document.getElementById(id);
 const x2t = px => px / PXPS, t2x = t => t * PXPS;
 const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
@@ -353,7 +355,9 @@ function tick(){
     if(!master().paused && !revRAF && !fwdRAF && !inKept(t)){ const ns=nextKeptStart(t); if(ns!=null){ seekSrc(ns); t=ns; } else master().pause(); }
     $("playhead").style.left=(54+t2x(t))+"px";
     const wrap=$("tlwrap"), x=54+t2x(t);
-    if(x<wrap.scrollLeft+80||x>wrap.scrollLeft+wrap.clientWidth-80) wrap.scrollLeft=x-wrap.clientWidth/2;
+    // 追従は再生ヘッドが実際に動いたフレームだけ実施。停止中(t不変)は手動の横スクロールバー操作を尊重し引き戻さない。
+    if(t!==_lastT && (x<wrap.scrollLeft+80||x>wrap.scrollLeft+wrap.clientWidth-80)) wrap.scrollLeft=x-wrap.clientWidth/2;
+    _lastT=t;
     // 2倍速以上は重い描画（レンダ合成・字幕重畳・crop枠のDOM更新）を全て凍結＝負荷を最小化。
     const ov=$("subov");
     if(mode==="src"){ ov.style.display="none"; }
@@ -483,7 +487,9 @@ function scrubSeek(){ if(scrubT==null || vid.seeking) return; if(Math.abs((vid.c
 vid.addEventListener("seeked",()=>{ if(scrubT!=null) scrubSeek(); });
 $("tlwrap").addEventListener("mousedown",e=>{
   if(e.button!==0 || e.target.closest(".clip")) return;  // クリップ操作とは別
-  const wrap=$("tlwrap");
+  const wrap=$("tlwrap"), _r=wrap.getBoundingClientRect();
+  // スクロールバーのガター上での押下はスクラブ(シーク)しない＝横スクロールバーを掴んでも再生ヘッドは動かない
+  if(e.clientY-_r.top > wrap.clientHeight || e.clientX-_r.left > wrap.clientWidth) return;
   const tAt=ev=>clamp(x2t(ev.clientX - wrap.getBoundingClientRect().left + wrap.scrollLeft - 54),0,D.source.duration);
   dragging=true; scrubT=tAt(e); seekSrc(scrubT);
   const mm=ev=>{ ev.preventDefault(); scrubT=tAt(ev); scrubSeek(); };
@@ -513,7 +519,7 @@ $("tlwrap").addEventListener("wheel",e=>{
   window.addEventListener("mouseup",()=>{ drag=false; document.body.style.userSelect=""; });
 })();
 
-// ── 再生制御 ── 1x=通常デコード再生 / 2x以上はシークステップ（低負荷・最大32x・playbackRate依存なし）
+// ── 再生制御 ── 1x/2x=通常デコード再生（音あり・ピッチ保持で本人の声のまま） / 4x以上はシークステップ（低負荷・無音・最大32x）
 function stopRev(){ if(revRAF){cancelAnimationFrame(revRAF); revRAF=null;} }
 function stopFwd(){ if(fwdRAF){cancelAnimationFrame(fwdRAF); fwdRAF=null;} }
 function curSpeed(){ if(fwdRAF) return fwdRate; if(revRAF) return revRate; const v=vid; return (v&&!v.paused)?(v.playbackRate||1):1; }
@@ -533,7 +539,7 @@ function playFwd(){ stopRev();
   const playing = fwdRAF!=null || !vid.paused;
   fwdRate = playing ? Math.min(32, fwdRate*2) : 1;   // 停止/逆再生から=1x、再生中は倍々で最大32x
   stopFwd(); vid.pause();
-  if(fwdRate<=1){ vid.playbackRate=1; vid.play(); } else stepRun(1);
+  if(fwdRate<=2){ vid.preservesPitch=true; vid.playbackRate=fwdRate; vid.play(); } else stepRun(1);  // 1x/2x=実再生(音あり・声そのまま) / 4x以上=無音シークステップ
 }
 function playRev(){ stopFwd(); vid.pause();
   revRate = revRAF!=null ? Math.min(32, revRate*2) : 1;  // J始動=1x、押す度に倍化（最大32x）

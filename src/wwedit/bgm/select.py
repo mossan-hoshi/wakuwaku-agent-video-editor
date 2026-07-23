@@ -37,29 +37,40 @@ def is_valid_bgm(path: str | Path) -> bool:
     return Path(path).suffix.lower() in AUDIO_EXTS
 
 
-def list_bgms(directory: str | Path) -> list[Path]:
-    """フォルダ内の正規 BGM を返す（ゴミ除外＋連番重複は素の名前へ統合）。
+def _content_hash(path: Path) -> str:
+    """ファイル内容の md5（真の重複＝バイト一致を判定するため）。"""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
-    同一正規名が複数あれば、サフィックス無し優先・無ければ名前順で1つだけ残す。返りは正規名順。
+
+def list_bgms(directory: str | Path) -> list[Path]:
+    """フォルダ内の正規 BGM を返す（ゴミ除外＋**真の重複のみ**統合）。
+
+    統合するのは **正規名(``(N)`` 除去後)が同じ かつ 内容が完全一致(md5)** の時だけ。
+    ``long bgm for podcast (1..8)`` のように **``(N)`` が別曲を表すフォルダでも全曲残す**
+    （名前だけでの誤統合を避ける＝「1曲ループ」を防ぐ）。真の再DL重複（バイト一致）は
+    サフィックス無しの素名を優先して1つに統合。返りは**ファイル名順**。
     """
     directory = Path(directory)
     if not directory.is_dir():
         return []
-    by_canon: dict[str, Path] = {}
+    by_key: dict[tuple[str, str], Path] = {}
     for p in sorted(directory.iterdir(), key=lambda x: x.name):
         if not p.is_file() or not is_valid_bgm(p):
             continue
         canon = canonical_stem(p.name)
         if not canon:
             continue
-        prev = by_canon.get(canon)
+        key = (canon, _content_hash(p))
+        prev = by_key.get(key)
         if prev is None:
-            by_canon[canon] = p
-        else:
-            # サフィックス無し（素の名前）を優先
-            if _VARIANT_RE.search(prev.stem) and not _VARIANT_RE.search(p.stem):
-                by_canon[canon] = p
-    return [by_canon[k] for k in sorted(by_canon)]
+            by_key[key] = p
+        elif _VARIANT_RE.search(prev.stem) and not _VARIANT_RE.search(p.stem):
+            by_key[key] = p  # 同一内容の重複はサフィックス無し（素の名前）を優先
+    return sorted(by_key.values(), key=lambda x: x.name)
 
 
 def pick_bgm(bgms: list[Path], key: str) -> Path | None:
