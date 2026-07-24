@@ -2,7 +2,7 @@ import pytest
 
 from wwedit.edl.schema import Chapter, Edl, Segment, SourceMedia
 from wwedit.publish.description import build_description
-from wwedit.publish.youtube import DEFAULT_TAGS, build_video_resource
+from wwedit.publish.youtube import build_video_resource, tags_from_description
 
 
 def _edl():
@@ -94,7 +94,30 @@ def test_intro_wrap_script():
     assert "".join(lines) == src  # 文字落ちなし
     assert max(len(line) for line in lines) <= 16  # 各行 max_line 以下
     for line in lines:  # 行末は句点/助詞/読点＝語中で切れない
-        assert line[-1] in "。！？をてにはがでともやへ、"
+        assert line[-1] in "。！？をてにはがでともやへの、"
+
+
+_INTRO_SRC = "ノアです。今日は小ネタと、タニグチさんのComfyUI MCP検討の続報です。では本編どうぞ"
+
+
+def test_intro_wrap_keeps_alnum_token_intact():
+    """英数字トークン(ComfyUI 等)を語中で割らない（割ると『Comfy / UI』になる）。"""
+    from wwedit.publish.intro_compose import wrap_script
+
+    lines = wrap_script(_INTRO_SRC).split("\n")
+    assert "".join(lines) == _INTRO_SRC              # 文字落ちなし
+    # ComfyUI / MCP がそれぞれ1行に収まっている（＝分断されていない）
+    assert any("ComfyUI" in line for line in lines)
+    assert any("MCP" in line for line in lines)
+
+
+def test_intro_wrap_no_orphan_copula():
+    """「…続報で / す。」のような孤立行を作らない（です/ます を割らない）。"""
+    from wwedit.publish.intro_compose import wrap_script
+
+    lines = wrap_script(_INTRO_SRC).split("\n")
+    assert all(len(line) >= 3 for line in lines)      # 極端に短い行が出ない
+    assert not any(line.strip() in ("す。", "す", "た。", "ます。") for line in lines)
 
 
 def test_script_to_subtitles_two_lines():
@@ -149,11 +172,36 @@ def test_eyecatch_title_card(tmp_path):
     assert im.mode == "RGBA"  # 透過（背景に重畳するため）
 
 
+_DESC = (
+    "Agenda「テーマ」\n\n#生成AI #ComfyUI #個人開発 #わく枠べんきょ会\n\n"
+    "00:00 - start\n01:38 - 章タイトル\n"
+)
+
+
+def test_tags_from_description():
+    # ハッシュタグ行だけを拾い、# を外して順序どおり返す
+    assert tags_from_description(_DESC) == ["生成AI", "ComfyUI", "個人開発", "わく枠べんきょ会"]
+    # 大小違いの重複は1つに畳む
+    assert tags_from_description("#AI #ai #Ai") == ["AI"]
+    # ハッシュタグ行が無ければ空（＝タグ無し。チャンネル #99以前の実投稿と同じ）
+    assert tags_from_description("Agenda「テーマ」\n\n00:00 - start\n") == []
+    # 本文中に # があるだけの行は拾わない（タグだけの行が対象）
+    assert tags_from_description("これは #ハッシュ を含む文です") == []
+
+
+def test_tags_from_description_respects_total_limit():
+    desc = "\n".join(["#" + "あ" * 20 for _ in range(50)])  # 合計上限を超える量
+    tags = tags_from_description(desc)
+    assert tags  # 何かは返る
+    assert sum(len(t) + 1 for t in tags) <= 480  # API の合計上限内に収まる
+
+
 def test_build_video_resource():
-    body = build_video_resource("タイトル", "概要欄テキスト", privacy="unlisted")
+    body = build_video_resource("タイトル", _DESC, privacy="unlisted")
     assert body["snippet"]["title"] == "タイトル"
-    assert body["snippet"]["description"] == "概要欄テキスト"
-    assert body["snippet"]["tags"] == DEFAULT_TAGS
+    assert body["snippet"]["description"] == _DESC
+    # tags 未指定＝概要欄のハッシュタグ由来（内容と無関係な固定タグを付けない）
+    assert body["snippet"]["tags"] == ["生成AI", "ComfyUI", "個人開発", "わく枠べんきょ会"]
     assert body["snippet"]["categoryId"] == "28"
     assert body["status"]["privacyStatus"] == "unlisted"
     assert body["status"]["selfDeclaredMadeForKids"] is False
@@ -166,3 +214,28 @@ def test_build_video_resource_limits_and_validation():
     assert len(body["snippet"]["description"]) == 5000
     with pytest.raises(ValueError):
         build_video_resource("t", "d", privacy="draft")
+
+
+def test_shrink_thumbnail_fits_api_limit(tmp_path):
+    """2MB超のサムネは JPEG 縮小してから送る（thumbnails.set は 2MB 上限）。"""
+    import numpy as np
+    from PIL import Image
+
+    from wwedit.publish.youtube import THUMBNAIL_MAX_BYTES, _shrink_thumbnail
+
+    # ノイズ＝圧縮が効きにくい ⇒ 2K PNG で確実に 2MB 超になる
+    rng = np.random.default_rng(0)
+    src = tmp_path / "thumbnail.png"
+    Image.fromarray(rng.integers(0, 255, (1440, 2560, 3), dtype="uint8")).save(src)
+    assert src.stat().st_size > THUMBNAIL_MAX_BYTES
+
+    out = _shrink_thumbnail(src)
+    assert out.stat().st_size <= THUMBNAIL_MAX_BYTES
+    assert Image.open(out).width == 1280
+    assert src.stat().st_size > THUMBNAIL_MAX_BYTES  # 元ファイルは触らない
+
+
+def test_build_video_resource_tags_override():
+    # 明示指定が優先／空リストで「タグ無し」を明示できる
+    assert build_video_resource("t", _DESC, tags=["手動"])["snippet"]["tags"] == ["手動"]
+    assert build_video_resource("t", _DESC, tags=[])["snippet"]["tags"] == []

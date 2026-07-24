@@ -9,14 +9,15 @@ chibi/マスコット(`_chibi`)は参照に使わない。
 from __future__ import annotations
 
 import glob
-import os
 from pathlib import Path
 
+from wwedit.common.env import env_value
 from wwedit.publish.thumbnail import generate_image, save_image
 
-# novtube の web/assets（キャラ素材の在処）。env で差し替え可。
-DEFAULT_ASSETS = os.environ.get(
-    "WWEDIT_NOVTUBE_ASSETS", r"C:\Users\sackn\github\novtube\web\assets")
+# novtube の web/assets（キャラ素材の在処）。`WWEDIT_NOVTUBE_ASSETS` で差し替え可。
+# 他のキー同様 os.environ → .env の順で解決する（生の os.environ だと .env 設定が効かない）。
+DEFAULT_ASSETS = (env_value("WWEDIT_NOVTUBE_ASSETS")
+                  or r"C:\Users\sackn\github\novtube\web\assets")
 
 # キャラID→本名フルネーム（novtube `web/docs/mascot.md` の「本名」より）。イントロのキャラ名表示用。
 # priya/kasumi は mascot.md に本名記載が無いため表示名(カタカナ)で暫定。

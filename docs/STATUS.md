@@ -2,7 +2,7 @@
 
 このファイルは**実装の現状・確定した設計判断・パイプライン実行手順**を残す唯一の状況ドキュメント。
 コンテキスト圧縮やセッション跨ぎでも、こことコード+テストだけで状態を復元できることを目的とする。
-（最終更新: 2026-06-28）
+（最終更新: 2026-07-24）
 
 **新規収録→投稿の通し手順は §8 RUNBOOK、再現性の正直な現状と穴は §9 監査を見る。**
 
@@ -271,9 +271,10 @@ subtitle_speaker_colors / bgm / post_units`。
 4. `[CLI][GPU軽]` **framing**: `scenes` → `classify-motion` → **`crop-apply`**（学習済`crop_model.pt`でbbox書戻し）。保守運用は `assign`。
 5. `[CLI][LLM]` **chapter**: `screen-text`(OCR) → `prepare` → chapter-detectorスキル → `apply` → `youtube`(章txt)。
 6. `[CLI][LLM]` **subtitle**: `prepare-captions` → caption-summarizerスキル(Sonnet) → `apply-captions`。
-7. `[手]` **edit serve** で確認・手修正（任意）→ `[CLI]` **`framing harvest-corrections`** → 定期 `[GPU]` **`crop-train --extra-root data/framing_corrections`**（継続学習）。
-8. `[CLI]` **compose video** `--framed --subtitles --audio speakers --bgm "D:/Users/sackn/Videos/wakuwaku/assets/sounds/bgms/<genre>"`
-   `--eyecatch --eyecatch-jingle-dir "D:/Users/sackn/Videos/wakuwaku/.../jingle"`
+7. `[手]` **edit serve** で確認・手修正（任意。カット/framing/章/字幕＋**重ね(画像/テキスト/モザイク)** を配置）
+   → `[CLI]` **`framing harvest-corrections`** → 定期 `[GPU]` **`crop-train --extra-root data/framing_corrections`**（継続学習）。
+8. `[CLI]` **compose video** `--framed --subtitles --audio speakers --chapter-ribbon --bgm "D:/Users/sackn/Videos/wakuwaku/assets/sounds/bgms/<genre>"`
+   `--eyecatch --eyecatch-jingle-dir "D:/Users/sackn/Videos/wakuwaku/.../jingle"`（`--overlays` は既定ON＝EDL.overlays を最上位に焼込）
    → 本編 framed＋字幕＋整音＋BGM(-34LUFS)＋**[H]全章冒頭2秒アイキャッチ**(generative art＋ランダムジングル) の mp4(`*_ec.mp4`)。
    挿入で章時刻がずれるので **`*_ec_chapters.txt`(補正済み)** を概要欄へ回す。（BGMジャンルは収録に合わせ選ぶ）
 9. `[skill][外部][GPU]` **[G] イントロ** ＝ **`intro-builder` スキル**を実行（Claudeが台本/服装非重複/尺/QAを判断し下記CLIを順に叩く）:
@@ -316,7 +317,155 @@ subtitle_speaker_colors / bgm / post_units`。
 
 - ⚠️ **背景Bashタスクがこのマシン/セッションで一斉killされる**: `run_in_background` は数分でstatus=killed（負荷ゼロのgrep監視ループも同時に死ぬ＝OOMではなく刈り取り）。**重い工程はフォアグラウンド(timeout≤600s)で回す**。**実壁時計**: 本編base compose=**506s**（ffmpeg encodeは3.66xだが起動/BGM整音のオーバーヘッド込みで実質2.8x・**600s制限にかなり近い＝要注意**）、アイキャッチ挿入=**304s**。分割して各々600s以内に収めた。transcribeも背景では4回killされ、フォアグラウンド faster-whisper(約8分)で完走。
 - ⚠️ **RAM 17GB・空き3〜4GB＋ユーザーのpiper学習(GPU)並走で WhisperX large-v3 がOS強制終了**。→ **`transcribe run --backend faster-whisper --compute-type int8_float16`** に切替えて完走（アライメントモデル不要でRAM小）。副作用: faster-whisperは日本語1文字トークン化で `cut fillers-prepare` が**候補0件**（フィラーカット無し＝過剰カット無しの安全側）。RAM/VRAM確保できる時はWhisperXが本命のまま。ユーザーのGPUジョブは絶対killしない（重処理前に `nvidia-smi`＋空きRAM確認）。
-- ⚠️ **SBV2 dub_local 合成サーバ(`tool/dub_local/server.py` :8123) がディスク上に存在しない**（novtube作業ツリーが空＝`publish tts`/`aivis.py` は前提サーバ不在で不可）。→ 代替=**SBV2 Python API 直叩き**（`data/2026-07-16/sbv2_direct_synth.py` 参照。github SBV2 venv python・model_assets/noa・style=`normal`・JP-Extra・BERTローカル）。**名前の漢字はG2Pで読めず脱落するのでTTS用テキストはひらがな**（「乃亜」→「のあ」）。字幕表示は漢字でOK。
-- ⚠️ **novtube → `novtube-voicebox` にリネーム**。キャラ素材/mascot.mdは `C:/Users/sackn/github/novtube-voicebox/web/...`。`character.py`/`thumbnail.py` は環境変数 **`WWEDIT_NOVTUBE_ASSETS=C:/Users/sackn/github/novtube-voicebox/web/assets`** で参照先差し替えが要る（既定は旧空パス`github/novtube/web/assets`）。noaフルアート参照=`noa_a-BZYVLRjH.webp`。
+- ~~⚠️ **SBV2 dub_local 合成サーバ(`tool/dub_local/server.py` :8123) がディスク上に存在しない**~~ **【2026-07-23 訂正: §11参照。`C:/Users/sackn/repos2/novtube4` に存在する】**（novtube作業ツリーが空＝`publish tts`/`aivis.py` は前提サーバ不在で不可）。→ 代替=**SBV2 Python API 直叩き**（`data/2026-07-16/sbv2_direct_synth.py` 参照。github SBV2 venv python・model_assets/noa・style=`normal`・JP-Extra・BERTローカル）。**名前の漢字はG2Pで読めず脱落するのでTTS用テキストはひらがな**（「乃亜」→「のあ」）。字幕表示は漢字でOK。
+- ~~⚠️ **novtube → `novtube-voicebox` にリネーム**~~ **【2026-07-23 訂正: §11参照。素材は `repos2/novtube4/web/assets`(6キャラ)。voicebox側は2キャラのみで不足】**。キャラ素材/mascot.mdは `C:/Users/sackn/github/novtube-voicebox/web/...`。`character.py`/`thumbnail.py` は環境変数 **`WWEDIT_NOVTUBE_ASSETS=C:/Users/sackn/github/novtube-voicebox/web/assets`** で参照先差し替えが要る（既定は旧空パス`github/novtube/web/assets`）。noaフルアート参照=`noa_a-BZYVLRjH.webp`。
 - ⚠️ **YouTube認証(readonly)が `RefreshError: credentials do not contain the necessary fields` で失敗**。`--no-dry-run` 実投稿前に検証（env値の空/scope/token）。必要なら `scripts/reauth_youtube.py` 再認証。dry-run(認証不要)は通過。
 - ℹ️ **アイキャッチ挿入は `compose --eyecatch` を丸ごと再実行せずに、既存本編mp4へ `compose.eyecatch_insert.insert_eyecatches(...)` を直接適用可**（base再エンコードを省ける）。イントロと本編の連結CLIは無く手動（concat demuxer・**相対パスはconcatファイルの所在dir基準**・msys絶対パス`/d/...`はffmpeg不可・音声フォーマットを本編48k/stereoに揃える）。
+
+---
+
+## 11. 2回目の新規収録 end-to-end 実走（2026-07-23 収録・#101）と、その過程で入れた機能
+
+`data/2026-07-23`（38.8分・25fps・話者 mossan-hoshi/Taniguchi）を頭から通した。**G3(投稿承認)手前まで到達**。
+
+### 11.1 §10 の環境記述の訂正（重要・過去の記述は誤り）
+- **novtube は消えていない**。`C:/Users/sackn/github/novtube` は**空**だが、実体は **`C:/Users/sackn/repos2/novtube{,2,3,4}`** の4本。
+  いずれにも `tool/dub_local/server.py` と `web/assets`(6キャラ) がある。**最新=`novtube4`(2026-07-01)** を使う。
+  `D:/Users/sackn/repos/novtube-voicebox` にも `web/assets` はあるが**2キャラのみ**なので使わない。
+- **SBV2 合成サーバは使える**（§10 の「存在しない」は誤り）。起動時に **`SBV2_ROOT` の明示が必須**:
+  ```
+  cd C:/Users/sackn/repos2/novtube4/tool/dub_local
+  DUB_LOCAL_SYNTH_PORT=8123 SBV2_ROOT=C:/Users/sackn/github/sbv2/Style-Bert-VITS2 <SBV2venv>/python.exe server.py
+  ```
+  既定の `SBV2_ROOT` は「novtube の2階層上の `sbv2/`」＝`repos2/sbv2`(不在)に解決され、`/synth` が **HTTP 501** を返す。
+  `/health` の `sbv2_root` が `github/sbv2/Style-Bert-VITS2` ならOK。SBV2 venv/モデルは `github/sbv2/...` 側。
+- キャラ立ち姿の参照先は `.env` の **`WWEDIT_NOVTUBE_ASSETS`**（現在 `C:\Users\sackn\repos2\novtube4\web\assets`）。
+  **`publish/character.py` は `env_value()` 経由に修正済**（生 `os.environ` だと `.env` が効かず既定の空パスを見ていた）。
+
+### 11.2 transcribe: WhisperX は使える（§10 の faster-whisper 退避は今回不要だった）
+- WhisperX large-v3 **float16** で 3トラック完走（本命どおり文字レベル整列・19,172語・語長中央値0.080s）。
+- ⚠️ **`--compute-type int8_float16` は使うな**。今回 8GB VRAM を空ける前に指定したところ、mossanトラックで
+  105分経っても終わらず（GPU 100%張り付き）。**float16 で VRAM を空けてから回すのが正**。
+- ⚠️ **whisperx は進捗を stdout に出さない**。stderr が無音でも**ハングではない**。生死判定は
+  `uvx py-spy dump --pid <python子PID>` でスタックを見る（`generate_segment_batched` なら ASR 実行中）。
+  90秒 `py-spy record` でフレームが散らばっていれば前進、単一フレーム100%張り付きならデッドロック。
+- `align` extra（whisperx）が要る: `uv sync --extra align ...`。
+
+### 11.3 framing: loading 検出0件は「仕様どおり」で異常ではない
+- `classify-motion` の loading 検出は**過去回も一貫してほぼ0件**（05-14:0 / 06-04:0 / 07-16:1 / 07-23:0）。
+- 構造上の理由: `scenes` が画面切替**で区間を分割する**ため、切替は「区間の**境界**」に現れる。
+  一方 `classify-motion` は「区間の**内部**」をオプティカルフローで見るので、境界の切替を原理的に拾えない。
+  加えて Farneback は全画面変化で流れ量を過小評価し、実測 spread は最大0.473（閾値0.6に構造的に届かない）。
+- 実測: 区間境界93個のうち画素差>30が36件・>80が11件＝**切替自体は起きている**。改善するなら「境界の画素差」で判定する別実装が要る。
+- `_extract_frame` は `subprocess.run(text=True)` がcp932で ffmpeg バナーを復号できず **UnicodeDecodeError を大量に吐くが無害**
+  （読み取りスレッド内で完結し、PNG は正しく出る。3/3で検証済）。
+
+### 11.4 今回追加した機能（コード＋テスト）
+- **重ね（ユーザー配置オーバーレイ）**: `EDL.overlays`（新規・ソース時刻＋正規化座標で非破壊）、`compose/overlay.py`、
+  `compose video --overlays`(既定ON)。種別は **画像 / テキスト / モザイク**。
+  - テキスト: **字幕と同一の二重縁取り**（ASS 2レイヤー: L0=同色外枠 / L1=白1次枠＋色文字）。色はパレット4色 or `#RRGGBB`、
+    サイズ・フォント・**揃え(左/中/右)**・**行間**（`line_spacing`。**1.0=枠込みで隣接行が接する寸前**＝被らない基準）。
+    複数行は**行ごとに別イベント**にして `\pos` の y を自前計算（ASS既定の行送りだと二重枠が上下で被るため）。
+  - 画像: 拡大率・不透明度。**D&D で再生ヘッド位置に配置**、複数選択時は**1枚5秒ずつ連続配置**（ファイル名順）。
+  - モザイク: bbox形式。**方式**=pixelate(低解像度・既定)/gaussian、**形状**=rect(既定)/ellipse、**強さ**可変。
+    `split`→`crop`→効果→元位置へ `overlay`(時刻 enable)。楕円は PIL 生成の楕円マスクを `alphamerge`。
+    ⚠️ pixelate の拡大し直しは **`scale={rw}:{rh}` と実寸を明示**（`scale=iw:ih` だと縮小後サイズのままで領域が縮む＝一度踏んだ）。
+  - **合成順序**: 映像 → framing → 字幕 → リボン → **モザイク → 画像 → テキスト**（モザイクは映像側にかかり、ユーザーの画像/テキストはその上に残る）。
+- **エディタ(webapp)**: 重ねトラック（Cutの直上・**重なりは自動で複数レーンに分割**）、ステージ上でのドラッグ配置/モザイクの角リサイズ、
+  **Ctrl+C/V でコピペ**（別ID・再生ヘッド位置へ／Undo対応）、**Delで削除**（Undoで完全復元＝削除APIが復元用ペイロードを返す）、
+  **Alt+ホイールで縦スクロール**＋ルーラー固定、ズームスライダを**2段対数**（中央=既定倍率7px/s）、
+  **重ねのスナップは他の重ねの端を最優先**（次点で従来の編集点）。
+  `/api/overlay/upload` は **`/api/overlay/{idx}` より前に登録**すること（後だと "upload" が `{idx}` にマッチして壊れる＝踏んだ）。
+  `UploadFile` は **module 直下 import**（`from __future__ import annotations` 下では関数内importだと FastAPI が注釈を解決できない＝踏んだ）。
+  `python-multipart` を webapp extra に追加済。
+- **framing の端ドラッグで隣接区間が追従**するよう修正（従来はシーンだけ動いて「調整」と食い違い、不連続データになった）。
+  反転入力は segment と同様クランプ（400を返さない仕様に変更）。
+- **イントロ字幕の折り返し修正**（`intro_compose._split_long`）: 英数字トークン(`ComfyUI`)を割らない・
+  「です」の「で」で折らない(残り3文字未満の位置を選ばない)・助詞に「の」を追加。
+- **`tests/test_editor_js_syntax.py`**: editor.html の埋め込みJSを `node --check`。
+  JSが1文字壊れると**タイムラインが丸ごと表示されなくなる**のに Python テストでは検出できないため（実際に踏んだ）。
+
+### 11.5 イントロ音声の読み（TTS）
+- **読み用テキストはかな書き**。SBV2は英字を1文字ずつ読む（`ComfyUI`→シーオーエムエフワイユーアイ）。
+  `ComfyUI`→**コミュファイユーアイ** / `MCP`→**エムシーピー** / `小ネタ`→**コネタ**(しょうねた と読まれる) / `のあです`→**ノアです**。
+  読点で間を作れる。**字幕用テキストは正表記**（`--script` に渡す方）。詳細は `intro-builder` スキル手順3。
+- **リップシンク後に読みを直す場合**は動画を作り直さず（$0.06/秒）、新旧音声を whisperx で単語タイムスタンプ化 →
+  共通語をアンカーに区間表を作り → `trim`+`setpts` で区間ごとに伸縮 → 新音声を `-map`。
+  無音区間（口が閉じている）で大きく吸収する。**逆再生の差し込みは発話中だと「口が喋り戻る」ので不自然**（±20%までは setpts が滑らか）。
+
+### 11.6 YouTube の tags は「その回の内容から起こす」（固定既定タグは廃止）
+- **`DEFAULT_TAGS`（勉強会/AI/コンピュータビジョン/論文紹介/わくわくべんきょ会）は固定値で、
+  内容と照合されないまま付いていた**。#100 にもそのまま付いており、その回に CV も論文紹介も無い。
+  → **タグは毎回その回の内容から決める**。固定既定に戻さないこと。
+- `build_video_resource` の既定を **`tags_from_description(desc)`** にした
+  （概要欄の**#ハッシュタグだけの行**から `#` を外して起こす・重複除去・API合計上限480字でカット）。
+  ハッシュタグは毎回内容に合わせて決めるので、**タグも自動的に内容と一致**する。
+- CLI: `publish youtube --tags "a,b,c"` で明示上書き（**ハッシュタグに載せない固有名を足したい時に使う**）、
+  `--no-tags` でタグ無し。dry-run の表示に `tags=` を追加（何が付くか投稿前に見える）。
+- テスト: `test_tags_from_description` / `..._respects_total_limit` / `..._tags_override`（`tests/test_publish.py`）。
+
+### 11.7 サムネの API 設定を実装（`thumbnails.set`）
+- `publish/youtube.py` に **`set_thumbnail(video_id, image)`** を追加。`publish youtube` は投稿後に
+  `<date>/thumbnail.png` があれば**自動で設定**する（`--thumbnail-file` / `--no-thumbnail`）。
+  投稿済み動画の差し替えは **`publish set-thumbnail <videoId> --image <png>`**。
+- **2MB 上限**があり `publish thumbnail` の 2K PNG は超えるので、`_shrink_thumbnail` が
+  1280幅 JPEG へ品質を段階的に落として収める（**元ファイルは触らない**・`<stem>_yt.jpg` を隣に作る）。
+- サムネ設定に失敗しても**投稿自体は成功として扱う**（例外を握って手動設定を案内）。
+- スコープは `youtube.upload` のままでよい（`thumbnails.set` は upload スコープで通る）。
+
+### 11.8 イントロと本編の連結（`final.mp4`）
+- イントロは **30fps/44.1kHz mono**、本編は **25fps/48kHz stereo** で規格が違う。concat demuxer で
+  `-c copy` する前に**イントロ側を本編と同じ規格へ再エンコード**する
+  （`fps=25,scale=1920:1080,setsar=1` / libx264 High@4.0 yuv420p / aac 48k stereo 192k）。9.3s なので安価。
+- **章時刻はイントロ尺ぶんシフトが必要**。2026-07-16(#100) はシフトせず投稿しており**章が7秒早い**。
+  今回は +9.32 秒シフト（切り捨て＝マーカーが章頭のわずか手前＝アイキャッチのタイトルカードが見える）。
+- 検証は**実フレームを抜いて確認**する（`ffmpeg -ss <t> -frames:v 1`）。継ぎ目・各章マーカー直後の
+  リボン/アイキャッチが期待どおりかを目で見る。
+
+### 11.10 重ねのレイヤー順と座標系（2026-07-24 修正・**仕様の確定**）
+投稿後にユーザー指摘で2件直した。どちらも「見えているものと出力が食い違う」種類のバグ。
+
+**(1) モザイクは最上位ではない**。当初「モザイク＝最上位レイヤー」で作ったため、
+チャプターリボン（収録日＋章名）や字幕まで一緒にぼけた。レイヤー順を下から
+**映像/ローディング → ユーザー画像 → モザイク → 字幕 → チャプターリボン → テキスト重ね**
+に変更。**モザイクが掛かるのは映像とユーザー画像だけ**で、文字情報/UI はその上に置く。
+- `compose_kept` の合成段の並び替え＋エディタの `drawOverlaysToCanvas` も同順に。
+- 回帰テスト `test_mosaic_is_below_text_ui_layers`（filtergraph 本文の出現順を検査。
+  `subprocess.run` を差し替えて `-filter_complex_script` の中身を読む）。
+
+**(2) 重ねの座標は「ソースフレーム基準」**（`Overlay.x/y/w/h`・確定仕様）。
+編集ツールはソース映像の上に置くので、**素材の同じ場所に貼り付く**のが正しい
+（モザイクは被写体＝隠したい画面領域を追従する）。合成は framing bbox で crop→拡大するため、
+`compose.overlay.place_overlays` が **crop 区間ごとに出力ピクセルへ写像**する。
+- crop の区切りは framed concat と**同じ規則**（keep区間ごとに中点の bbox・
+  `output_crop_segments`。隣接同一 bbox は畳んでフィルタ数を抑える）。
+  1つの重ねが crop 違いの区間をまたぐと、**区間ごとに別の配置へ分割**される。
+- **`scale`/`size`/枠の太さ/`strength` にも crop 拡大率 `mag` を掛ける**
+  （寄っても見かけの大きさ・粗さがソース基準で保たれる）。
+- 画面外へ出た配置は落とす。はみ出したモザイク矩形は**内側へ寄せる**（欠けさせない＝
+  隠し漏れを作らない側に倒す）。
+- エディタ**左ペイン（配置UI）は元からソース基準で正しかった**。直したのは合成と
+  右ペイン（`renderResult`／`ovMap`）。**この2つは同じ式にすること**（ズレるとプレビューが嘘になる）。
+- 純関数 `place_overlays` / `output_crop_segments` にテスト6件
+  （恒等・crop写像・画面外除外・区間分割・bbox畳み込み・mag のサイズ反映）。
+
+⚠️ **投稿済みの #101 は修正前の合成**（リボン/字幕がぼけた版・座標も旧解釈）。
+作り直す場合は `compose video --framed --subtitles --chapter-ribbon --overlays` から。
+
+### 11.9 2026-07-23 の進捗と結果
+| 工程 | 状態 |
+|---|---|
+| ingest / transcribe / cut(無音78.3s・フィラー152件52.9s) / framing(94区間・44 bbox) / chapter(10章・話者付) / subtitle(171件) | ✅ |
+| G2 編集確認（ユーザー手修正・重ね15件配置） / `framing harvest-corrections`（crop教師28件収穫） | ✅ |
+| compose（リボン＋字幕＋話者音声＋BGM electro_pop＋重ね＋アイキャッチ10章）→ `cut_preview_ec.mp4` 34分38秒 | ✅ |
+| 補正チャプター `cut_preview_ec_chapters.txt` | ✅ |
+| サムネ `thumbnail.png`（キャラ右寄せ・大きく） / タイトル【ComfyUI MCPたのしい！ #101 わく枠べんきょ会】 | ✅ |
+| イントロ `intro/intro_final.mp4` 9.30秒 | ✅ |
+| 概要欄 `youtube_description.txt`（章は**+9.32秒シフト**した `final_chapters.txt`） | ✅ |
+| 連結 → **`final.mp4`（200.1MB・34分47秒）**・メタ検証 `youtube_upload_request.json` | ✅ |
+| **G3 承認 → 投稿完了** | ✅ **https://youtu.be/9GA02J5YU3E（private・34分48秒）** |
+| サムネ設定（`thumbnails.set`） | ✅ maxres まで生成確認 |
+
+読み戻しで tags 15件・章12行・カスタムサムネ・privacy=private を確認済み。
+⚠️ `publish youtube` は Claude Code の権限分類でブロックされることがある（dry-run 含む）。
+その場合メタ検証は `build_video_resource` を直接呼ぶ。**実投稿はユーザーの許可を取ってから**。

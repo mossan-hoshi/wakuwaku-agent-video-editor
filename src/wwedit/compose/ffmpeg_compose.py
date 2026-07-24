@@ -418,6 +418,7 @@ def compose_kept(
     ranges: list | None = None,
     chapter_ribbon: bool = False,
     ribbon_date: str = "",
+    overlays: bool = False,
 ) -> Path:
     """EDL の keep区間を連結した mp4 を出力する。
 
@@ -426,6 +427,12 @@ def compose_kept(
     ``framed``: True で各区間に EDL.framing の bbox を crop+scale 適用（[E]フレーミング反映）。
       さらに loading 区間には、のべつべ!ローディング画面を**最上位レイヤーとして overlay**
       合成する（元映像・音声は下に残す＝非破壊。音声は下の発話を継続）。
+    ``overlays``: True で ``EDL.overlays``（編集ツールでユーザーが置いた画像/テキスト/モザイク）
+      を焼き込む。レイヤー順は下から
+      **映像/ローディング → 画像 → モザイク → 字幕 → チャプターリボン → テキスト**。
+      モザイクが掛かるのは**映像とユーザー画像だけ**で、字幕・リボン・テキスト重ねといった
+      文字情報/UI はモザイクより上に置く（最上位に置くと収録日や章名までぼける）。
+      テキストは字幕と同一の二重縁取り。
     ``max_ranges``: 先頭N区間だけ合成（動作確認用）。
     ``ranges``: 連結対象区間の明示指定（**投稿単位[K]はその単位の区間を渡す**）。
       指定時は kept_ranges() の代わりに使い、字幕/フレーミング/BGMもこの区間から導出される。
@@ -479,8 +486,91 @@ def compose_kept(
     else:
         script = build_filter_script(ranges, vsrc="0:v", asrc=asrc)
 
-    # 字幕（最上位レイヤー）: 出力時刻へ変換した EDL.subtitles を ASS で焼き込む
     vmap = "[outv]"
+
+    # ── レイヤー順（下→上）────────────────────────────────────────────────
+    #   映像/ローディング → ユーザー画像 → **モザイク** → 字幕 → リボン → テキスト重ね
+    # モザイクは「映像とユーザー画像」だけに掛ける。字幕・チャプターリボン・テキスト重ね＝
+    # **文字情報/UIはモザイクより上**に置く（最上位に置くと収録日やチャプター名までぼける）。
+    # 重ねの座標は**ソースフレーム基準**なので、フレーミング crop 区間ごとに
+    # 出力ピクセルへ写像する（同じ重ねでも crop が変われば位置・倍率が変わる）。
+    ovs: list = []
+    if overlays and edl.overlays:
+        from wwedit.compose.overlay import (
+            edl_overlays_for_output,
+            output_crop_segments,
+            place_overlays,
+        )
+
+        ovs = place_overlays(
+            edl_overlays_for_output(edl, ranges), output_crop_segments(edl, ranges),
+            src_w=edl.source.width or out_w, src_h=edl.source.height or out_h,
+            out_w=out_w, out_h=out_h,
+        )
+
+    # ユーザー画像: 静止画を -loop で無限フレーム化し、拡大率・不透明度を掛けて位置へ重ねる
+    if ovs:
+        from wwedit.compose.overlay import image_overlays
+
+        imgs = image_overlays(ovs)
+        if imgs:
+            prev = vmap[1:-1]
+            ov_chains: list[str] = []
+            for k, p in enumerate(imgs):
+                o = p.o
+                idx = sum(1 for a in cmd if a == "-i")
+                cmd += ["-loop", "1", "-i", str(o.path)]
+                sc = max(0.01, float(o.scale or 1.0)) * p.mag   # crop 拡大率を反映
+                op = min(1.0, max(0.0, float(o.opacity if o.opacity is not None else 1.0)))
+                px, py = int(round(p.x)), int(round(p.y))
+                ov_chains.append(
+                    f"[{idx}:v]scale=iw*{sc:g}:ih*{sc:g},format=rgba,"
+                    f"colorchannelmixer=aa={op:g}[ovi{k}]"
+                )
+                nxt = f"ovo{k}"
+                ov_chains.append(
+                    f"[{prev}][ovi{k}]overlay={px}:{py}:eof_action=pass:"
+                    f"enable='between(t,{p.start:.3f},{p.end:.3f})'[{nxt}]"
+                )
+                prev = nxt
+            script = f"{script};\n" + ";\n".join(ov_chains)
+            vmap = f"[{prev}]"
+
+    # モザイク: 映像＋ユーザー画像に適用（字幕/リボン/テキストより**下**）。
+    # 楕円形状は PIL で白楕円のグレースケールPNGを作り、マスク入力として渡す。
+    if ovs:
+        from wwedit.compose.overlay import (
+            build_mosaic_chains,
+            mosaic_overlays,
+            mosaic_region_px,
+        )
+
+        mosaics = mosaic_overlays(ovs)
+        if mosaics:
+            from PIL import Image, ImageDraw
+
+            mo_dir = Path(tempfile.mkdtemp())
+            # マスクは**配置ごと**（crop 区間ごとに領域サイズが変わる）に作るので添字で引く
+            mask_input_of: dict[int, int] = {}
+            for k, p in enumerate(mosaics):
+                if p.o.shape == "ellipse":
+                    _, _, rw, rh = mosaic_region_px(p, out_w, out_h)
+                    m = Image.new("L", (rw, rh), 0)
+                    ImageDraw.Draw(m).ellipse([0, 0, rw - 1, rh - 1], fill=255)
+                    mp = mo_dir / f"mask_{k:03d}_{p.o.id}.png"
+                    m.save(mp)
+                    tmp_files.append(str(mp))
+                    idx = sum(1 for a in cmd if a == "-i")
+                    cmd += ["-loop", "1", "-i", str(mp)]
+                    mask_input_of[k] = idx
+            prev = vmap[1:-1]
+            mo_chains, last = build_mosaic_chains(
+                mosaics, prev, out_w, out_h, mask_input_of=mask_input_of)
+            if mo_chains:
+                script = f"{script};\n" + ";\n".join(mo_chains)
+                vmap = f"[{last}]"
+
+    # 字幕（モザイクより上）: 出力時刻へ変換した EDL.subtitles を ASS で焼き込む
     if subtitles and edl.subtitles:
         from wwedit.subtitle.ass import MAIN_PALETTE, assign_speaker_colors, build_ass
 
@@ -502,14 +592,16 @@ def compose_kept(
             # Windowsパスの ':'/'\\' を filtergraph でエスケープせず済むよう、cwd を ass_dir に
             # 置いて相対ファイル名で参照する（他パスは絶対化済み）。
             run_cwd = str(ass_dir)
-            script = f"{script};\n[outv]ass={ass_file.name}[outvs]"
+            script = f"{script};\n[{vmap[1:-1]}]ass={ass_file.name}[outvs]"
             vmap = "[outvs]"
 
     # チャプターリボン（最上位・左上に張り付く2段リボン）: 章ごとに話者色で色分け。
     # 各章のPNG(フルフレーム透過)を出力タイムラインの区間に enable で被せる（非破壊）。
     if chapter_ribbon and edl.chapters:
         from wwedit.compose.chapter_ribbon import (
-            chapter_ribbon_intervals, render_ribbon_png, resolve_speaker_schemes,
+            chapter_ribbon_intervals,
+            render_ribbon_png,
+            resolve_speaker_schemes,
         )
 
         ivs, _tot = chapter_ribbon_intervals(edl, ranges)
@@ -535,6 +627,22 @@ def compose_kept(
                 prev = nxt
             script = f"{script};\n" + ";\n".join(rib_chains)
             vmap = f"[{prev}]"
+
+    # テキスト重ね（**最上位**＝リボン・字幕より上／モザイクは掛からない）。
+    # 位置指定(\an7+\pos)の ASS を字幕とは別ファイルで最後に重ねる。
+    if ovs:
+        from wwedit.compose.overlay import build_overlay_ass
+
+        ov_ass = build_overlay_ass(ovs, play_w=out_w, play_h=out_h)
+        if "Dialogue:" in ov_ass:
+            ov_dir = Path(run_cwd) if run_cwd else Path(tempfile.mkdtemp())
+            ov_file = ov_dir / "overlays.ass"
+            ov_file.write_text(ov_ass, encoding="utf-8")
+            tmp_files.append(str(ov_file))
+            run_cwd = str(ov_dir)  # filtergraph は相対名で参照（Windowsパスのエスケープ回避）
+            prev = vmap[1:-1]
+            script = f"{script};\n[{prev}]ass={ov_file.name}[outvo]"
+            vmap = "[outvo]"
 
     # BGM（本編下に -20dB 目安でダッキング・最後に薄く敷く）。元音声 [outa] と amix。
     # bgm が複数曲なら同ジャンル連続再生のため1本のプレイリストwavへ連結してから敷く。

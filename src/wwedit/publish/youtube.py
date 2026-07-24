@@ -12,7 +12,37 @@ from __future__ import annotations
 
 # Science & Technology
 DEFAULT_CATEGORY_ID = "28"
-DEFAULT_TAGS = ["勉強会", "AI", "コンピュータビジョン", "論文紹介", "わくわくべんきょ会"]
+# tags の合計文字数上限（YouTube Data API）。超過分は落とす。
+TAGS_TOTAL_LIMIT = 480
+
+
+def tags_from_description(description: str, *, total_limit: int = TAGS_TOTAL_LIMIT) -> list[str]:
+    """概要欄の **#ハッシュタグ行**から tags を起こす（``#`` を外し順序維持・重複除去）。
+
+    固定の既定タグを付けると、その回の内容と無関係な語が混ざる（#100 で実際に起きた）。
+    その回の検索語は概要欄のハッシュタグ行＝**内容に合わせて毎回決めるもの**で表現されている。
+    固定の既定タグを付けると内容と無関係な語が入る（#100 で「コンピュータビジョン」「論文紹介」が
+    付いてしまった）ため、**tags は概要欄のハッシュタグから起こす**のを既定にする。
+    """
+    tags: list[str] = []
+    seen: set[str] = set()
+    total = 0
+    for line in description.splitlines():
+        words = line.split()
+        if not words or not all(w.startswith("#") for w in words):
+            continue  # ハッシュタグだけの行が対象（本文中の # は拾わない）
+        for w in words:
+            t = w.lstrip("#").strip()
+            if not t or t.lower() in seen:
+                continue
+            # tags は合計文字数に上限がある。空白を含む語は引用符扱いで2字ぶん多く数えられる。
+            cost = len(t) + (2 if " " in t else 0) + 1
+            if total + cost > total_limit:
+                return tags
+            seen.add(t.lower())
+            tags.append(t)
+            total += cost
+    return tags
 
 
 def build_video_resource(
@@ -27,7 +57,8 @@ def build_video_resource(
     """videos.insert の body（snippet＋status）を組み立てる純関数。
 
     privacy: private(既定・下書き相当) / unlisted / public。title は100字・description は
-    5000字の API 上限でトリム。tags 未指定は既定タグ。
+    5000字の API 上限でトリム。**tags 未指定は概要欄のハッシュタグ行から起こす**
+    （`tags_from_description`＝内容に合ったタグになる）。``tags=[]`` で明示的にタグ無し。
     """
     if privacy not in ("private", "unlisted", "public"):
         raise ValueError(f"privacy は private/unlisted/public: {privacy}")
@@ -35,7 +66,7 @@ def build_video_resource(
         "snippet": {
             "title": title.strip()[:100],
             "description": description[:5000],
-            "tags": tags if tags is not None else list(DEFAULT_TAGS),
+            "tags": tags if tags is not None else tags_from_description(description),
             "categoryId": category_id,
         },
         "status": {
@@ -95,3 +126,53 @@ def upload_video(video_path: str, body: dict) -> dict:
     while resp is None:
         _status, resp = req.next_chunk()
     return resp
+
+
+# サムネの API 上限（超えると 400。PNG/JPEG いずれも同じ）。
+THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024
+
+
+def set_thumbnail(video_id: str, image_path: str) -> dict:
+    """投稿済み動画にカスタムサムネを設定する（`thumbnails.set`）。
+
+    **2MB 上限**があり `publish thumbnail` の出力(2K PNG)はたいてい超えるので、
+    超過時は JPEG へ品質を落として変換してから送る（元ファイルは触らない）。
+    """
+    from pathlib import Path
+
+    src = Path(image_path)
+    if not src.exists():
+        raise FileNotFoundError(image_path)
+    try:
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaFileUpload
+    except ImportError as e:
+        raise RuntimeError(
+            "google-api-python-client が未導入です: "
+            "`uv add google-api-python-client google-auth-oauthlib`"
+        ) from e
+
+    send, mime = src, ("image/png" if src.suffix.lower() == ".png" else "image/jpeg")
+    if src.stat().st_size > THUMBNAIL_MAX_BYTES:
+        send, mime = _shrink_thumbnail(src), "image/jpeg"
+
+    yt = build("youtube", "v3", credentials=_oauth_credentials())
+    return yt.thumbnails().set(
+        videoId=video_id,
+        media_body=MediaFileUpload(str(send), mimetype=mime, resumable=False),
+    ).execute()
+
+
+def _shrink_thumbnail(src, max_bytes: int = THUMBNAIL_MAX_BYTES):
+    """2MB 以内に収まる JPEG を隣に作って返す（1280x720・品質を段階的に落とす）。"""
+    from PIL import Image
+
+    out = src.with_name(f"{src.stem}_yt.jpg")
+    im = Image.open(src).convert("RGB")
+    if im.width > 1280:
+        im = im.resize((1280, round(im.height * 1280 / im.width)), Image.LANCZOS)
+    for q in (92, 85, 78, 70, 60):
+        im.save(out, "JPEG", quality=q, optimize=True)
+        if out.stat().st_size <= max_bytes:
+            return out
+    return out

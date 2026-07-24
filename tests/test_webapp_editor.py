@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -190,9 +191,14 @@ def test_edit_postunit_span_recomputes_ranges(tmp_path: Path):
     assert rg2[0].start == pytest.approx(4.0)
 
 
-def test_edit_framing_rejects_bad_range(tmp_path: Path):
-    c = _client(_edl(tmp_path))
-    assert c.post("/api/framing/0", json={"start": 9.0, "end": 5.0}).status_code == 400
+def test_edit_framing_clamps_inverted_range(tmp_path: Path):
+    # 反転入力(start>end)は segment と同様クランプで最小区間に補正（区間が消えない）
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    r = c.post("/api/framing/0", json={"start": 9.0, "end": 5.0})
+    assert r.status_code == 200
+    f = sorted(load_edl(edl_path).framing, key=lambda x: x.start)[0]
+    assert f.start == pytest.approx(9.0) and f.end == pytest.approx(9.05)
 
 
 def test_edit_framing_sets_and_clears_bbox(tmp_path: Path):
@@ -344,3 +350,204 @@ def test_edit_post_unit_title(tmp_path: Path):
     c = _client(edl_path)
     assert c.post("/api/postunit/0", json={"title": "第1回・改"}).status_code == 200
     assert load_edl(edl_path).post_units[0].title == "第1回・改"
+
+
+# ── ユーザー配置オーバーレイ（最上位レイヤー） ──────────────────────────
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def test_add_text_overlay_and_timeline_exposes_it(tmp_path: Path):
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    r = c.post("/api/overlay", json={"kind": "text", "start": 5.0, "end": 7.0,
+                                     "x": 0.25, "y": 0.1, "text": "重ね文字",
+                                     "color": "purple", "size": 72})
+    assert r.status_code == 200 and r.json()["ok"]
+    ov = load_edl(edl_path).overlays[0]
+    assert (ov.kind, ov.text, ov.color, ov.size) == ("text", "重ね文字", "purple", 72)
+    assert ov.double_border is True          # 既定で字幕と同じ二重縁取り
+    t = c.get("/api/timeline").json()["overlays"][0]
+    assert t["source_start"] == 5.0 and t["out_start"] == 1.0   # keep先頭4.0基準
+    assert t["css_color"] == "#783cb4"       # purple の CSS プレビュー色
+
+
+def test_overlay_zero_length_gets_default_span(tmp_path: Path):
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    c.post("/api/overlay", json={"kind": "text", "start": 5.0, "end": 5.0})
+    ov = load_edl(edl_path).overlays[0]
+    assert ov.end - ov.start == pytest.approx(3.0)
+
+
+def test_edit_overlay_updates_and_clamps_position(tmp_path: Path):
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    c.post("/api/overlay", json={"kind": "text", "start": 5.0, "end": 7.0})
+    assert c.post("/api/overlay/0", json={"x": 1.9, "y": -0.4,
+                                          "double_border": False}).status_code == 200
+    ov = load_edl(edl_path).overlays[0]
+    assert (ov.x, ov.y) == (1.0, 0.0)        # 0..1 にクランプ
+    assert ov.double_border is False
+
+
+def test_delete_overlay(tmp_path: Path):
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    c.post("/api/overlay", json={"kind": "text", "start": 5.0, "end": 7.0})
+    assert c.delete("/api/overlay/0").status_code == 200
+    assert load_edl(edl_path).overlays == []
+    assert c.delete("/api/overlay/0").status_code == 404
+
+
+def test_upload_image_saves_and_dedups_name(tmp_path: Path):
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    r1 = c.post("/api/overlay/upload", files={"file": ("a.png", _PNG, "image/png")})
+    r2 = c.post("/api/overlay/upload", files={"file": ("a.png", _PNG, "image/png")})
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert Path(r1.json()["path"]).exists()
+    assert r1.json()["name"] == "a.png" and r2.json()["name"] == "a_1.png"  # 上書きしない
+    assert c.get("/media/overlay/a.png").status_code == 200
+
+
+def test_sequential_image_overlays_5s_each(tmp_path: Path):
+    """複数画像は再生ヘッドから5秒ずつ連続で並ぶ（UIの並べ方をAPIレベルで再現）。"""
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    t = 4.0
+    for name in ("a.png", "b.png", "c.png"):
+        up = c.post("/api/overlay/upload", files={"file": (name, _PNG, "image/png")}).json()
+        c.post("/api/overlay", json={"kind": "image", "start": t, "end": t + 5.0,
+                                     "path": up["path"]})
+        t += 5.0
+    ovs = load_edl(edl_path).overlays
+    assert [(o.start, o.end) for o in ovs] == [(4.0, 9.0), (9.0, 14.0), (14.0, 19.0)]
+    assert all(o.kind == "image" for o in ovs)
+
+
+def test_overlay_align_and_line_spacing_roundtrip(tmp_path: Path):
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    c.post("/api/overlay", json={"kind": "text", "start": 5.0, "end": 7.0,
+                                 "align": "center", "line_spacing": 1.4})
+    o = load_edl(edl_path).overlays[0]
+    assert o.align == "center" and o.line_spacing == pytest.approx(1.4)
+    c.post("/api/overlay/0", json={"align": "right", "line_spacing": 0.8})
+    o = load_edl(edl_path).overlays[0]
+    assert o.align == "right" and o.line_spacing == pytest.approx(0.8)
+
+
+def test_overlay_invalid_align_falls_back_to_left(tmp_path: Path):
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    c.post("/api/overlay", json={"kind": "text", "start": 5.0, "end": 7.0, "align": "bogus"})
+    assert load_edl(edl_path).overlays[0].align == "left"
+
+
+def test_delete_overlay_returns_snapshot_for_undo(tmp_path: Path):
+    """削除は復元用の完全ペイロードを返し、同一IDで再作成できる（Ctrl+Z の裏付け）。"""
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    c.post("/api/overlay", json={"kind": "text", "start": 5.0, "end": 7.0,
+                                 "text": "消して戻す", "color": "green", "id": "keepme01"})
+    snap = c.delete("/api/overlay/0").json()["overlay"]
+    assert snap["id"] == "keepme01" and load_edl(edl_path).overlays == []
+    # スナップショットをそのまま再POST＝Undo。同じIDで復活する
+    c.post("/api/overlay", json=snap)
+    back = load_edl(edl_path).overlays
+    assert len(back) == 1 and back[0].id == "keepme01" and back[0].text == "消して戻す"
+
+
+def test_framing_edge_drag_links_neighbor(tmp_path: Path):
+    """シーン(framing)区間の端を動かすと隣接区間の端も追従して連続性を保つ。"""
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    # framing: [4,10] static, [10,20] loading。区間0の右端を10→13へ
+    r = c.post("/api/framing/0", json={"end": 13.0})
+    assert r.status_code == 200
+    regs = sorted(load_edl(edl_path).framing, key=lambda x: x.start)
+    assert regs[0].end == pytest.approx(13.0)
+    assert regs[1].start == pytest.approx(13.0)   # 隣接が追従＝隙間/重なり無し
+    assert r.json()["neighbors"] == [{"idx": 1, "start": 10.0, "end": 20.0}]
+    # 区間1の左端を戻す（13→11）→ 区間0の右端も追従
+    c.post("/api/framing/1", json={"start": 11.0})
+    regs = sorted(load_edl(edl_path).framing, key=lambda x: x.start)
+    assert regs[0].end == pytest.approx(11.0) and regs[1].start == pytest.approx(11.0)
+
+
+def test_framing_edge_clamped_to_neighbor(tmp_path: Path):
+    """端を隣接の外まで動かそうとしてもクランプされ、区間が消えない。"""
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    # 区間0の右端を100へ（区間1の終端20を超える）→ 20-0.05 にクランプ
+    c.post("/api/framing/0", json={"end": 100.0})
+    regs = sorted(load_edl(edl_path).framing, key=lambda x: x.start)
+    assert regs[0].end == pytest.approx(19.95)
+    assert regs[1].start == pytest.approx(19.95) and regs[1].end == pytest.approx(20.0)
+
+
+def test_mosaic_overlay_create_and_edit(tmp_path: Path):
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    r = c.post("/api/overlay", json={"kind": "mosaic", "start": 5.0, "end": 7.0,
+                                     "x": 0.2, "y": 0.3, "w": 0.4, "h": 0.25,
+                                     "mosaic_type": "gaussian", "shape": "ellipse",
+                                     "strength": 22})
+    assert r.status_code == 200
+    o = load_edl(edl_path).overlays[0]
+    assert o.kind == "mosaic" and o.mosaic_type == "gaussian" and o.shape == "ellipse"
+    assert o.w == pytest.approx(0.4) and o.h == pytest.approx(0.25) and o.strength == 22
+    # timeline に mosaic 情報が出る
+    t = [x for x in c.get("/api/timeline").json()["overlays"] if x["kind"] == "mosaic"][0]
+    assert t["shape"] == "ellipse" and t["mosaic_type"] == "gaussian"
+    # 編集: 矩形pixelateへ変更・強さ更新
+    c.post("/api/overlay/0", json={"mosaic_type": "pixelate", "shape": "rect",
+                                   "strength": 30, "w": 0.5})
+    o = load_edl(edl_path).overlays[0]
+    assert o.mosaic_type == "pixelate" and o.shape == "rect"
+    assert o.strength == 30 and o.w == pytest.approx(0.5)
+
+
+def test_mosaic_invalid_enums_fall_back(tmp_path: Path):
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    c.post("/api/overlay", json={"kind": "mosaic", "start": 5.0, "end": 7.0,
+                                 "mosaic_type": "zzz", "shape": "star"})
+    o = load_edl(edl_path).overlays[0]
+    assert o.mosaic_type == "pixelate" and o.shape == "rect"
+
+
+def test_timeline_exposes_path_for_copy_paste(tmp_path: Path):
+    """コピー&ペーストで画像を複製できるよう timeline が path を返す。"""
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    up = c.post("/api/overlay/upload", files={"file": ("pic.png", _PNG, "image/png")}).json()
+    c.post("/api/overlay", json={"kind": "image", "start": 5.0, "end": 7.0, "path": up["path"]})
+    t = c.get("/api/timeline").json()["overlays"][0]
+    assert t["path"] == up["path"] and t["name"] == "pic.png"
+
+
+def test_paste_creates_independent_copy_with_given_id(tmp_path: Path):
+    """貼り付け＝同内容・別IDで新規作成（元を消してもコピーは残る）。"""
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    c.post("/api/overlay", json={"kind": "mosaic", "start": 5.0, "end": 8.0,
+                                 "w": 0.4, "h": 0.3, "shape": "ellipse",
+                                 "mosaic_type": "gaussian", "strength": 25, "id": "src00001"})
+    src = load_edl(edl_path).overlays[0]
+    # クライアントの貼り付け相当: 同フィールド・別ID・再生ヘッド位置へ
+    c.post("/api/overlay", json={"kind": src.kind, "id": "pasted01", "start": 12.0, "end": 15.0,
+                                 "x": src.x, "y": src.y, "w": src.w, "h": src.h,
+                                 "shape": src.shape, "mosaic_type": src.mosaic_type,
+                                 "strength": src.strength})
+    ovs = load_edl(edl_path).overlays
+    assert [o.id for o in ovs] == ["src00001", "pasted01"]
+    p = ovs[1]
+    assert (p.w, p.h, p.shape, p.mosaic_type, p.strength) == \
+           (src.w, src.h, src.shape, src.mosaic_type, src.strength)
+    assert p.start == 12.0 and p.end == 15.0        # 位置だけ再生ヘッドへ
+    # 元を削除してもコピーは独立して残る
+    c.delete("/api/overlay/0")
+    assert [o.id for o in load_edl(edl_path).overlays] == ["pasted01"]

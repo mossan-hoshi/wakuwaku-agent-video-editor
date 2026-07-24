@@ -241,14 +241,22 @@ def youtube(
     title_file: Path = typer.Option(None, help="タイトル（既定 <date>/yt_title.txt）"),
     desc_file: Path = typer.Option(None, help="概要欄（既定 <date>/youtube_description.txt）"),
     privacy: str = typer.Option("private", help="private(既定・下書相当)/unlisted/public"),
+    tags: str = typer.Option(
+        "", help="タグをカンマ区切りで明示（既定＝概要欄の#ハッシュタグ行から起こす）"),
+    no_tags: bool = typer.Option(False, "--no-tags", help="タグを付けない"),
+    thumbnail_file: Path = typer.Option(
+        None, help="投稿後に設定するサムネ（既定 <date>/thumbnail.png があれば自動）"),
+    no_thumbnail: bool = typer.Option(
+        False, "--no-thumbnail", help="サムネを設定しない（YouTube Studio で手動設定する）"),
     dry_run: bool = typer.Option(
         True, help="既定True＝本体JSONを書くだけ（キー不要・検証用）。--no-dry-run で実投稿"
     ),
 ) -> None:
     """[K] 動画を YouTube へ投稿（既定 dry-run＝メタデータ検証のみ・キー不要）。
 
-    タイトル/概要欄は事前生成物（`publish description`）を使う。実投稿は .env の
-    WWEDIT_YT_* と google-api-python-client が要る（無ければ手順を示して停止）。
+    タイトル/概要欄は事前生成物（`publish description`）を使う。**タグは概要欄のハッシュタグ行
+    から起こす**（内容に合わないタグが付かないように・`--tags`/`--no-tags` で上書き可）。
+    実投稿は .env の WWEDIT_YT_* と google-api-python-client が要る（無ければ手順を示して停止）。
     """
     from wwedit.publish.youtube import build_video_resource
 
@@ -260,7 +268,12 @@ def youtube(
         raise typer.Exit(1)
     title = tfile.read_text(encoding="utf-8").strip() if tfile.exists() else "わくわくべんきょ会"
     desc = dfile.read_text(encoding="utf-8")
-    body = build_video_resource(title, desc, privacy=privacy)
+    tag_list: list[str] | None = None
+    if no_tags:
+        tag_list = []
+    elif tags.strip():
+        tag_list = [t.strip().lstrip("#") for t in tags.split(",") if t.strip()]
+    body = build_video_resource(title, desc, tags=tag_list, privacy=privacy)
 
     if dry_run:
         import json
@@ -274,6 +287,7 @@ def youtube(
             f"[green]dry-run[/]: 投稿リクエストを検証・保存 → {req_path}\n"
             f"  title={body['snippet']['title']!r} privacy={body['status']['privacyStatus']} "
             f"desc {len(desc)}字 / video={video.name}\n"
+            f"  tags={body['snippet']['tags']}\n"
             "  実投稿は [cyan]--no-dry-run[/]（.env の WWEDIT_YT_* ＋ google-api-python-client 要）"
         )
         return
@@ -291,3 +305,35 @@ def youtube(
         raise typer.Exit(1) from e
     vid = resp.get("id", "?")
     rprint(f"[green]投稿完了[/]: https://youtu.be/{vid} (privacy={privacy})")
+
+    thumb = thumbnail_file or (edl_dir / "thumbnail.png")
+    if no_thumbnail or not thumb.exists():
+        return
+    from wwedit.publish.youtube import set_thumbnail
+
+    try:
+        set_thumbnail(vid, str(thumb))
+    except Exception as e:  # サムネ失敗で投稿自体を無かったことにはしない
+        rprint(f"[yellow]サムネ設定に失敗[/]: {e}\n"
+               f"  → YouTube Studio で {thumb} を手動設定してください")
+        return
+    rprint(f"[green]サムネ設定[/]: {thumb.name}")
+
+
+@publish_app.command("set-thumbnail")
+def set_thumbnail_cmd(
+    video_id: str = typer.Argument(..., help="対象の YouTube 動画ID（URL末尾）"),
+    image: Path = typer.Option(..., help="設定するサムネ画像（2MB超は自動でJPEG縮小）"),
+) -> None:
+    """投稿済み動画のサムネを差し替える（`thumbnails.set`）。"""
+    from wwedit.publish.youtube import set_thumbnail
+
+    if not image.exists():
+        rprint(f"[red]画像がありません: {image}[/]")
+        raise typer.Exit(1)
+    try:
+        set_thumbnail(video_id, str(image))
+    except (RuntimeError, FileNotFoundError) as e:
+        rprint(f"[red]設定不可[/]: {e}")
+        raise typer.Exit(1) from e
+    rprint(f"[green]サムネ設定[/]: https://youtu.be/{video_id} ← {image.name}")
