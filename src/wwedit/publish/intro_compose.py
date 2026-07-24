@@ -26,17 +26,50 @@ def _duration(path: str | Path) -> float:
     return float(r.stdout.strip() or 0.0)
 
 
-# 助詞・読点（ここの**直後**で折ると自然＝語中で切らない）。
-_BREAK_AFTER = "をてにはがでともやへ、"
+# 助詞・読点（ここの**直後**で折ると自然＝語中で切らない）。「の」も最頻出なので含める。
+_BREAK_AFTER = "をてにはがでともやへの、"
+# 折った後の行がこれ未満になる位置では折らない（「…続報で / す。」のような孤立を防ぐ）。
+_MIN_TAIL = 3
+
+
+def _atomic_spans(s: str) -> list[tuple[int, int]]:
+    """英数字の連続（ComfyUI / MCP / 2026 等）＝**分割してはいけない塊**の [start, end) 一覧。"""
+    spans: list[tuple[int, int]] = []
+    i = 0
+    while i < len(s):
+        if s[i].isascii() and s[i].isalnum():
+            j = i
+            while j < len(s) and s[j].isascii() and (s[j].isalnum() or s[j] in "-._"):
+                j += 1
+            spans.append((i, j))
+            i = j
+        else:
+            i += 1
+    return spans
+
+
+def _breakable(s: str, i: int, spans: list[tuple[int, int]]) -> bool:
+    """位置 i の**直後**で折ってよいか（英数字トークンの内部なら不可）。"""
+    return not any(a <= i < b - 1 for a, b in spans)
 
 
 def _split_long(s: str, max_line: int) -> list[str]:
-    """長い文を、中央付近の助詞/読点の直後で折る（語中で切らない）。再帰で max_line 以下に。"""
+    """長い文を、中央付近の助詞/読点の直後で折る（語中で切らない）。再帰で max_line 以下に。
+
+    英数字トークン（ComfyUI 等）は割らず、折った残りが極端に短くなる位置も避ける。
+    """
     if len(s) <= max_line:
         return [s]
     mid = len(s) // 2
-    cand = [i for i, ch in enumerate(s[:-1]) if ch in _BREAK_AFTER]
-    pos = min(cand, key=lambda i: abs(i - mid)) if cand else mid - 1
+    spans = _atomic_spans(s)
+
+    def ok(i: int) -> bool:
+        return _breakable(s, i, spans) and len(s) - (i + 1) >= _MIN_TAIL
+
+    cand = [i for i, ch in enumerate(s[:-1]) if ch in _BREAK_AFTER and ok(i)]
+    if not cand:  # 助詞が無ければ、トークンを割らない位置のうち中央に最も近い所で折る
+        cand = [i for i in range(len(s) - 1) if ok(i)]
+    pos = min(cand, key=lambda i: abs(i - mid)) if cand else len(s) - 1
     return _split_long(s[:pos + 1], max_line) + _split_long(s[pos + 1:], max_line)
 
 

@@ -30,6 +30,8 @@ cv = [
 webapp = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
+    # オーバーレイ画像アップロード(UploadFile=multipart/form-data)に必須
+    "python-multipart>=0.0.9",
 ]
 # [E]フレーミング: OmniParser V2 のアイコン検出器(YOLOv8)で GUI 要素 bbox を取り、
 # 非interactable領域の補集合＝コンテンツ領域と推論する。caption(Florence)は使わない。

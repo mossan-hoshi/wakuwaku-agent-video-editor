@@ -39,6 +39,8 @@ def video(
         None, help="アイキャッチのジングル群フォルダ（章ごとに seed でランダム選曲）"),
     chapter_ribbon: bool = typer.Option(
         False, help="左上に収録日＋章名の2段リボンを常時表示（章ごとに話者色で色分け）"),
+    overlays: bool = typer.Option(
+        True, help="編集ツールで置いたオーバーレイ(画像/テキスト)を最上位に焼き込む"),
 ) -> None:
     """EDL の keep区間を連結した mp4 を書き出す（無音カット適用済み）。
 
@@ -114,7 +116,7 @@ def video(
         edl, out_path, crf=crf, preset=preset, audio=audio,
         framed=framed, subtitles=subtitles, bgm=bgm_path, bgm_gain_db=bgm_gain_db,
         bgm_target_lufs=target, max_ranges=n, ranges=sel_ranges,
-        chapter_ribbon=chapter_ribbon, ribbon_date=ribbon_date,
+        chapter_ribbon=chapter_ribbon, ribbon_date=ribbon_date, overlays=overlays,
     )
     size_mb = result.stat().st_size / 1e6
     rprint(f"[green]合成完了[/]: {result} ({size_mb:.1f}MB)")

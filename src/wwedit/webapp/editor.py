@@ -17,6 +17,14 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+# fastapi は任意依存（webapp extra）だが、``from __future__ import annotations`` 下では
+# 型注釈が文字列化されるため、FastAPI が解決できるよう **module 直下** に置く必要がある
+# （関数内 import だと UploadFile が未定義参照になり multipart 受信が壊れる）。
+try:
+    from fastapi import File, UploadFile
+except ImportError:  # webapp extra 未導入。create_editor_app 呼び出し時に ImportError になる
+    File = UploadFile = None  # type: ignore[assignment]
+
 __all__ = ["create_editor_app", "SubtitleEdit", "SpeakerColor"]
 
 
@@ -91,6 +99,60 @@ class MergeDir(BaseModel):
     dir: int = 1  # -1=前(左)の隣接と結合 / 1=次(右)の隣接と結合
 
 
+class OverlayNew(BaseModel):
+    """最上位レイヤーへ置く画像/テキストの新規追加。"""
+
+    kind: str = "text"      # text | image
+    start: float
+    end: float
+    x: float = 0.5          # 左上基準の正規化座標(0..1)
+    y: float = 0.5
+    text: str = "テキスト"
+    path: str = ""          # kind=image のときの画像絶対パス
+    color: str = "blue"     # red|purple|blue|green| #RRGGBB
+    size: int = 64
+    font: str = "Meiryo"
+    double_border: bool = True
+    white_ring: float = 5.0     # 1次枠線(白)の太さ
+    outer_outline: float = 9.0  # 外枠(同色)の太さ
+    align: str = "left"         # left | center | right
+    line_spacing: float = 1.0   # 行間倍率(1.0=枠込みで被らない基準)
+    scale: float = 1.0
+    opacity: float = 1.0
+    # kind="mosaic"
+    w: float = 0.25             # 領域の幅(正規化)
+    h: float = 0.25             # 領域の高さ(正規化)
+    mosaic_type: str = "pixelate"  # pixelate | gaussian
+    shape: str = "rect"         # rect | ellipse
+    strength: float = 16.0      # pixelate=ブロック粗さ / gaussian=sigma
+    id: str = ""                # 指定時はこのIDで作成（Undoでの復元に使う）
+
+
+class OverlayEdit(BaseModel):
+    """既存オーバーレイの部分更新（None のフィールドは変更しない）。"""
+
+    start: float | None = None
+    end: float | None = None
+    x: float | None = None
+    y: float | None = None
+    text: str | None = None
+    color: str | None = None
+    size: int | None = None
+    font: str | None = None
+    double_border: bool | None = None
+    white_ring: float | None = None
+    outer_outline: float | None = None
+    align: str | None = None
+    line_spacing: float | None = None
+    scale: float | None = None
+    opacity: float | None = None
+    w: float | None = None
+    h: float | None = None
+    mosaic_type: str | None = None
+    shape: str | None = None
+    strength: float | None = None
+
+
 def _src_to_out(ranges: list, t: float) -> float:
     """ソース秒 t を keep連結後の出力秒へ（カット内なら次keep先頭へスナップ）。"""
     acc = 0.0
@@ -112,6 +174,13 @@ def _ass_to_css(ass_color: str) -> str:
         return "#ffffff"
     bb, gg, rr = (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF
     return f"#{rr:02x}{gg:02x}{bb:02x}"
+
+
+def _overlay_ass_color(color: str) -> str:
+    """オーバーレイの色指定（パレットキー / #RRGGBB）を ASS 色へ（UI表示用の橋渡し）。"""
+    from wwedit.compose.overlay import resolve_color
+
+    return resolve_color(color)
 
 
 def create_editor_app(edl_path: str | Path, preview_path: str | Path | None = None):
@@ -196,6 +265,24 @@ def create_editor_app(edl_path: str | Path, preview_path: str | Path | None = No
             ],
             "bgm": [{"start": b.start, "end": b.end, "path": Path(b.path).name if b.path else None}
                     for b in (edl.bgm or [])],
+            "overlays": [
+                {"idx": i, "id": o.id, "kind": o.kind,
+                 "source_start": o.start, "source_end": o.end,
+                 "out_start": _src_to_out(ranges, o.start),
+                 "out_end": _src_to_out(ranges, o.end),
+                 "x": o.x, "y": o.y, "text": o.text, "color": o.color,
+                 "css_color": _ass_to_css(_overlay_ass_color(o.color)),
+                 "size": o.size, "font": o.font, "double_border": o.double_border,
+                 "white_ring": o.white_ring, "outer_outline": o.outer_outline,
+                 "align": o.align, "line_spacing": o.line_spacing,
+                 "w": o.w, "h": o.h, "mosaic_type": o.mosaic_type,
+                 "shape": o.shape, "strength": o.strength,
+                 "scale": o.scale, "opacity": o.opacity,
+                 "name": Path(o.path).name if o.path else "",
+                 "path": o.path,   # コピー&ペーストで画像を複製するのに使う
+                 "url": f"/media/overlay/{Path(o.path).name}" if o.path else ""}
+                for i, o in enumerate(edl.overlays or [])
+            ],
             "post_units": [
                 {"id": p.id, "title": p.title,
                  "start": min((r.start for r in p.ranges), default=0.0),
@@ -422,6 +509,135 @@ def create_editor_app(edl_path: str | Path, preview_path: str | Path | None = No
         _log({"type": "chapter_add", "idx": idx, "start_at": payload.start_at})
         return {"ok": True, "idx": idx}
 
+    @app.post("/api/overlay")
+    def add_overlay(payload: OverlayNew) -> dict:
+        """最上位レイヤーへ画像/テキストのオーバーレイを追加する（ソース時刻で保持）。"""
+        import uuid
+
+        from wwedit.edl.schema import Overlay
+
+        edl = load_edl(edl_path)
+        st, en = max(0.0, payload.start), max(0.0, payload.end)
+        if en - st <= 1e-3:
+            en = st + 3.0  # 既定3秒（尺ゼロは合成で捨てられるため）
+        align = payload.align if payload.align in ("left", "center", "right") else "left"
+        mtype = (payload.mosaic_type
+                 if payload.mosaic_type in ("pixelate", "gaussian") else "pixelate")
+        shape = payload.shape if payload.shape in ("rect", "ellipse") else "rect"
+        ov = Overlay(
+            id=payload.id or uuid.uuid4().hex[:8], kind=payload.kind, start=st, end=en,
+            x=min(1.0, max(0.0, payload.x)), y=min(1.0, max(0.0, payload.y)),
+            text=payload.text, path=payload.path, color=payload.color,
+            size=max(8, int(payload.size)), font=payload.font,
+            double_border=payload.double_border,
+            white_ring=max(0.0, payload.white_ring),
+            outer_outline=max(0.0, payload.outer_outline),
+            align=align, line_spacing=max(0.05, payload.line_spacing),
+            scale=max(0.01, payload.scale), opacity=min(1.0, max(0.0, payload.opacity)),
+            w=min(1.0, max(0.01, payload.w)), h=min(1.0, max(0.01, payload.h)),
+            mosaic_type=mtype, shape=shape, strength=max(1.0, payload.strength),
+        )
+        edl.overlays.append(ov)
+        save_edl(edl, edl_path)
+        _log({"type": "overlay_add", "id": ov.id, "kind": ov.kind,
+              "start": ov.start, "end": ov.end})
+        return {"ok": True, "id": ov.id, "idx": len(edl.overlays) - 1}
+
+    # 注意: この upload ルートは ``/api/overlay/{idx}`` より**前**に登録する。
+    # 後ろだと "upload" が {idx} にマッチして int 変換に失敗する（FastAPIは定義順で照合）。
+    @app.post("/api/overlay/upload")
+    async def upload_overlay_image(file: UploadFile = File(...)) -> dict:  # noqa: B008
+        """オーバーレイ用画像を ``data/<date>/overlays/`` へ保存し、絶対パスを返す。"""
+        ov_dir = edl_path.parent / "overlays"
+        ov_dir.mkdir(parents=True, exist_ok=True)
+        name = Path(file.filename or "image.png").name
+        dest = ov_dir / name
+        stem, suf, n = dest.stem, dest.suffix, 1
+        while dest.exists():  # 同名は上書きせず連番で退避
+            dest = ov_dir / f"{stem}_{n}{suf}"
+            n += 1
+        dest.write_bytes(await file.read())
+        return {"ok": True, "path": str(dest.resolve()), "name": dest.name,
+                "url": f"/media/overlay/{dest.name}"}
+
+    @app.post("/api/overlay/{idx}")
+    def edit_overlay(idx: int, payload: OverlayEdit) -> dict:
+        """オーバーレイの位置・時刻・文字装飾を更新する。"""
+        edl = load_edl(edl_path)
+        ovs = edl.overlays or []
+        if not (0 <= idx < len(ovs)):
+            raise HTTPException(404, f"overlay {idx} not found")
+        o = ovs[idx]
+        before = {"x": o.x, "y": o.y, "start": o.start, "end": o.end, "text": o.text}
+        if payload.start is not None:
+            o.start = max(0.0, payload.start)
+        if payload.end is not None:
+            o.end = max(0.0, payload.end)
+        if payload.x is not None:
+            o.x = min(1.0, max(0.0, payload.x))
+        if payload.y is not None:
+            o.y = min(1.0, max(0.0, payload.y))
+        if payload.text is not None:
+            o.text = payload.text
+        if payload.color is not None:
+            o.color = payload.color
+        if payload.size is not None:
+            o.size = max(8, int(payload.size))
+        if payload.font is not None:
+            o.font = payload.font
+        if payload.double_border is not None:
+            o.double_border = payload.double_border
+        if payload.white_ring is not None:
+            o.white_ring = max(0.0, payload.white_ring)
+        if payload.outer_outline is not None:
+            o.outer_outline = max(0.0, payload.outer_outline)
+        if payload.align in ("left", "center", "right"):
+            o.align = payload.align
+        if payload.line_spacing is not None:
+            o.line_spacing = max(0.05, payload.line_spacing)
+        if payload.scale is not None:
+            o.scale = max(0.01, payload.scale)
+        if payload.opacity is not None:
+            o.opacity = min(1.0, max(0.0, payload.opacity))
+        if payload.w is not None:
+            o.w = min(1.0, max(0.01, payload.w))
+        if payload.h is not None:
+            o.h = min(1.0, max(0.01, payload.h))
+        if payload.mosaic_type in ("pixelate", "gaussian"):
+            o.mosaic_type = payload.mosaic_type
+        if payload.shape in ("rect", "ellipse"):
+            o.shape = payload.shape
+        if payload.strength is not None:
+            o.strength = max(1.0, payload.strength)
+        if o.end - o.start <= 1e-3:
+            o.end = o.start + 0.5
+        save_edl(edl, edl_path)
+        _log({"type": "overlay_edit", "idx": idx, "id": o.id, "before": before,
+              "after": {"x": o.x, "y": o.y, "start": o.start, "end": o.end,
+                        "text": o.text}})
+        return {"ok": True}
+
+    @app.delete("/api/overlay/{idx}")
+    def delete_overlay(idx: int) -> dict:
+        """オーバーレイを削除する。"""
+        edl = load_edl(edl_path)
+        ovs = edl.overlays or []
+        if not (0 <= idx < len(ovs)):
+            raise HTTPException(404, f"overlay {idx} not found")
+        gone = ovs.pop(idx)
+        save_edl(edl, edl_path)
+        _log({"type": "overlay_delete", "idx": idx, "id": gone.id})
+        # 復元(Undo)用に、そのまま /api/overlay へ再POSTできる完全ペイロードを返す
+        return {"ok": True, "overlay": gone.model_dump(mode="json")}
+
+    @app.get("/media/overlay/{name}")
+    def media_overlay(name: str):
+        """プレビュー用にオーバーレイ画像を返す（``overlays/`` 配下限定）。"""
+        p = (edl_path.parent / "overlays" / Path(name).name).resolve()
+        if not p.exists():
+            raise HTTPException(404, "overlay image not found")
+        return FileResponse(str(p))
+
     @app.post("/api/postunit/{idx}")
     def edit_postunit(idx: int, payload: PostUnitEdit) -> dict:
         """投稿単位（セクション）のタイトルを編集する。"""
@@ -468,12 +684,26 @@ def create_editor_app(edl_path: str | Path, preview_path: str | Path | None = No
         f = regs[idx]
         before = {"start": f.start, "end": f.end, "kind": f.kind,
                   "loading_label": f.loading_label, "warning": f.warning, "bbox": f.bbox}
+        # 隣接区間も動かした場合の Undo 用に、変化した近傍の前状態を記録する
+        nb_before: list[dict] = []
         if payload.kind in ("static", "loading", "pending"):
             f.kind = payload.kind
+        # framing 区間は隙間なく連続している前提。端を動かしたら隣接の端も合わせる
+        # （シーンと調整は同じ framing の別ビューなので、これで両方が一貫する）。
         if payload.start is not None:
-            f.start = float(payload.start)
+            lo = (regs[idx - 1].start + 0.05) if idx > 0 else 0.0
+            f.start = max(lo, min(f.end - 0.05, float(payload.start)))
+            if idx > 0:
+                p = regs[idx - 1]
+                nb_before.append({"idx": idx - 1, "start": p.start, "end": p.end})
+                p.end = f.start  # 連続性維持
         if payload.end is not None:
-            f.end = float(payload.end)
+            hi = (regs[idx + 1].end - 0.05) if idx + 1 < len(regs) else edl.source.duration_s
+            f.end = min(hi, max(f.start + 0.05, float(payload.end)))
+            if idx + 1 < len(regs):
+                nx = regs[idx + 1]
+                nb_before.append({"idx": idx + 1, "start": nx.start, "end": nx.end})
+                nx.start = f.end
         if payload.loading_label is not None:
             f.loading_label = payload.loading_label or None
         if payload.warning is not None:
@@ -489,8 +719,10 @@ def create_editor_app(edl_path: str | Path, preview_path: str | Path | None = No
         save_edl(edl, edl_path)
         after = {"start": f.start, "end": f.end, "kind": f.kind,
                  "loading_label": f.loading_label, "warning": f.warning, "bbox": f.bbox}
-        _log({"type": "framing_edit", "idx": idx, "before": before, "after": after})
-        return {"ok": True, "before": before, "after": after}
+        _log({"type": "framing_edit", "idx": idx, "before": before, "after": after,
+              "neighbors": nb_before})
+        # neighbors: 端の連動で動いた隣接区間の**変更前**start/end（クライアントの Undo 用）
+        return {"ok": True, "before": before, "after": after, "neighbors": nb_before}
 
     @app.post("/api/chapter/{idx}")
     def edit_chapter(idx: int, payload: ChapterEdit) -> dict:

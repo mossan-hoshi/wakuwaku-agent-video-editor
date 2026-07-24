@@ -23,7 +23,8 @@
   #side { flex:1; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px; font-size:13px; overflow:auto; }
   #side h3 { margin:0 0 8px; color:var(--accent); font-size:13px; }
   #side label { display:block; margin:6px 0 2px; color:#9aa; font-size:12px; }
-  #side input[type=text], #side select { width:100%; background:#2a2a2e; color:#fff; border:1px solid var(--line); padding:5px; border-radius:4px; }
+  #side input[type=text], #side select, #side textarea { width:100%; background:#2a2a2e; color:#fff; border:1px solid var(--line); padding:5px; border-radius:4px; }
+  #side textarea { font-family:inherit; font-size:13px; line-height:1.3; min-height:40px; }
   #side .row { display:flex; gap:6px; }
   #side .saved { color:#2d6; font-size:11px; }
   #splitter { height:7px; background:#111; cursor:row-resize; flex:0 0 auto; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
@@ -36,12 +37,15 @@
   #tickerInner .tkc { color:#012; background:var(--accent); border-radius:3px; padding:0 3px; font-weight:bold; }
   #tickerInner .tkp { color:#cfcfd6; } #tickerInner .tkf { color:#ffffff; }
   #tickerInner span { margin:0 2px; }
-  #tlwrap { flex:1 1 auto; overflow-x:auto; overflow-y:hidden; background:#161618; position:relative; }
-  #tl { position:relative; height:100%; min-height:200px; }
-  .ruler { position:relative; height:20px; border-bottom:1px solid var(--line); color:#889; font-size:10px; }
+  /* トラックが増えて縦にはみ出したらスクロール（横は従来どおり） */
+  #tlwrap { flex:1 1 auto; overflow:auto; background:#161618; position:relative; }
+  #tl { position:relative; min-height:100%; }
+  /* 縦スクロールしても時刻目盛りは上端に残す */
+  .ruler { position:sticky; top:0; z-index:9; height:20px; background:#161618;
+           border-bottom:1px solid var(--line); color:#889; font-size:10px; }
   .tick { position:absolute; top:0; height:20px; border-left:1px solid #2c2c32; padding-left:3px; }
   .track { position:relative; height:34px; border-bottom:1px solid #242428; }
-  .tlabel { position:sticky; left:0; z-index:5; display:inline-block; width:54px; height:34px; line-height:34px; padding-left:6px;
+  .tlabel { position:sticky; left:0; z-index:8; display:inline-block; width:54px; height:34px; line-height:34px; padding-left:6px;
             background:#111; color:#9aa; font-size:11px; border-right:1px solid var(--line); }
   .clip { position:absolute; top:4px; height:26px; border-radius:3px; font-size:11px; line-height:26px; padding:0 4px;
           overflow:hidden; white-space:nowrap; cursor:pointer; border:1px solid rgba(0,0,0,.4); }
@@ -52,11 +56,38 @@
   .chap { background:#2b3a55; color:#cdf; }
   .post { background:#3a5530; color:#cfd; }
   .bgm { background:#33304a; color:#bbd; }
-  #playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--accent); z-index:8; pointer-events:none; box-shadow:0 0 4px var(--accent); }
+  .ovl { color:#fff; font-weight:bold; border:1px solid rgba(255,255,255,.35); }
+  #playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--accent); z-index:11; pointer-events:none; box-shadow:0 0 4px var(--accent); }
   #playhead::before { content:""; position:absolute; top:0; left:-5px; border-left:6px solid transparent; border-right:6px solid transparent; border-top:8px solid var(--accent); }
-  #inmark,#outmark { position:absolute; top:0; bottom:0; width:2px; z-index:7; pointer-events:none; }
+  #inmark,#outmark { position:absolute; top:0; bottom:0; width:2px; z-index:10; pointer-events:none; }
   #inmark{background:#6f6;} #outmark{background:#f96;}
   /* ソース映像上の crop(トリミング)bbox 重畳。実コンテンツ矩形基準。 */
+  /* オーバーレイ文字色の見本／ピッカー行 */
+  .swatches { display:flex; gap:5px; align-items:center; margin:2px 0 4px; flex-wrap:wrap; }
+  .swatches .sw { width:22px; height:22px; border-radius:4px; border:2px solid #444; cursor:pointer; padding:0; }
+  .swatches .sw.on { border-color:#fff; box-shadow:0 0 0 2px var(--accent); }
+  .swatches input[type=color] { width:34px; height:24px; padding:0; background:none; border:1px solid var(--line); border-radius:4px; cursor:pointer; }
+  #side input[type=number] { width:100%; background:#2a2a2e; color:#fff; border:1px solid var(--line); padding:5px; border-radius:4px; }
+  .alnbtns { display:flex; gap:4px; }
+  .alnbtns .t { flex:1; padding:5px 2px; }
+  .alnbtns .t.on { background:var(--accent); color:#111; }
+  /* 画像のドラッグ&ドロップ受け入れ中のハイライト */
+  #boxSrc.dropping { outline:2px dashed var(--accent); outline-offset:-4px; }
+  #boxSrc.dropping::after { content:"ドロップで再生ヘッド位置から5秒ずつ配置"; position:absolute;
+    left:50%; top:8px; transform:translateX(-50%); background:rgba(0,0,0,.72); color:var(--accent);
+    font-size:12px; padding:3px 10px; border-radius:4px; pointer-events:none; z-index:5; }
+  /* ユーザー配置オーバーレイ（最上位レイヤー）の重畳・ドラッグ配置 */
+  #ovlov { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
+  .ovitem { position:absolute; cursor:move; pointer-events:auto; outline:1px dashed rgba(255,255,255,.35);
+            white-space:pre; line-height:1.15; font-weight:bold; transform-origin:left top; }
+  .ovitem.sel { outline:2px solid #ffb300; }
+  .ovitem img { display:block; }
+  /* モザイク領域: 枠＋角ハンドルでサイズ変更 */
+  .ovmos { outline:1px dashed rgba(120,220,220,.9); box-sizing:border-box; }
+  .ovmos.sel { outline:2px solid #6ee; }
+  .ovmos .mh { position:absolute; width:11px; height:11px; background:#6ee; border:1px solid #123; }
+  .ovmos .mh.tl{left:-6px;top:-6px;cursor:nwse-resize;} .ovmos .mh.tr{right:-6px;top:-6px;cursor:nesw-resize;}
+  .ovmos .mh.bl{left:-6px;bottom:-6px;cursor:nesw-resize;} .ovmos .mh.br{right:-6px;bottom:-6px;cursor:nwse-resize;}
   #cropov { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
   #cropbox { position:absolute; border:2px solid #ffb300; box-shadow:0 0 0 2000px rgba(0,0,0,.32); cursor:move; pointer-events:auto; }
   #cropbox.full { border-style:dashed; box-shadow:none; }  /* 全画面=cropなし。角ドラッグでcrop作成可 */
@@ -79,23 +110,27 @@
     <span style="color:#667">|</span>
     <button class="t" id="uBtn" title="Ctrl+Z">↶</button><button class="t" id="rBtn" title="Ctrl+Shift+Z">↷</button>
     <span class="sp"></span>
-    <span style="color:#778;font-size:11px">J/K/L=逆停順 ・ ←→=1F ・ ↑↓=選択種別の区切り ・ I/O=in/out ・ Del=範囲カット ・ B=分割 ・ N=スナップ ・ 編集は即自動保存</span>
+    <span style="color:#778;font-size:11px">J/K/L=逆停順 ・ ←→=1F ・ ↑↓=選択種別の区切り ・ I/O=in/out ・ Del=範囲カット ・ B=分割 ・ N=スナップ ・ ホイール=移動/Ctrl=ズーム/Alt=縦スクロール ・ 重ね: Ctrl+C/V=コピペ・Del=削除 ・ 編集は即自動保存</span>
   </header>
   <div id="stage">
-    <div class="vbox" id="boxSrc"><div class="vl">入力（ソース）<span style="color:#667">／調整クリップのcrop枠を重畳・ドラッグで調整</span></div><video id="vid"></video><div id="cropov"></div></div>
+    <div class="vbox" id="boxSrc"><div class="vl">入力（ソース）<span style="color:#667">／調整クリップのcrop枠を重畳・ドラッグで調整</span></div><video id="vid"></video><div id="cropov"></div><div id="ovlov"></div></div>
     <div class="vbox" id="boxPrev" style="display:none"><div class="vl">レンダリング結果（EDLからソース映像にframing/字幕をライブ合成・mp4不要）</div><canvas id="rcv"></canvas><div id="subov"></div></div>
     <div id="side"><h3>選択なし</h3><div style="color:#778">字幕/シーン/章クリップをクリック＝編集（即自動保存）。Cutクリップ＝keep⇔カット。タイムラインクリック＝シーク。</div></div>
   </div>
   <div id="splitter"></div>
   <div id="tlbar">
     <span style="color:#9aa;font-size:11px">倍率</span>
-    <input type="range" id="zoom" min="1.5" max="60" step="0.5" value="7">
+    <input type="range" id="zoom" min="0" max="1000" step="1" value="500" title="既定倍率が中央。左半分＝縮小、右半分＝拡大（対数）">
     <span id="zlbl" style="color:#778;font-size:11px;width:54px"></span>
     <span class="bsep"></span>
     <button class="t on" id="snapBtn" title="編集点へ吸着（N）">🧲 スナップ</button>
     <span class="bsep"></span>
     <button class="t" id="addSub" title="再生ヘッド位置に字幕追加">＋字幕</button>
     <button class="t" id="addChap" title="再生ヘッド位置に章追加">＋章</button>
+    <button class="t" id="addOvT" title="再生ヘッド位置にテキストを最上位レイヤーで追加">＋テキスト</button>
+    <button class="t" id="addOvI" title="再生ヘッド位置に画像を最上位レイヤーで追加">＋画像</button>
+    <button class="t" id="addOvM" title="再生ヘッド位置にモザイク領域を追加（下の映像をぼかす）">＋モザイク</button>
+    <input type="file" id="ovFile" accept="image/*" multiple style="display:none">
     <div id="ticker" title="再生に同期した文字起こし"><div id="tickerInner"></div></div>
   </div>
   <div id="tlwrap"><div id="tl">
@@ -167,14 +202,28 @@ vid.addEventListener("click",()=>{ vid.controls=!vid.controls; });
 
 // 最小ズーム=スライダ左端。時間固定でなく「全体が表示幅の約半分に収まる」縮尺を動的算出。
 function minPXPS(){ const w=$("tlwrap").clientWidth||900; return Math.max(0.02, 0.5*w/(D.source.duration||1)); }
-function syncZoomRange(){ const mn=minPXPS(); const z=$("zoom"); z.min=mn.toFixed(3); z.step=((60-mn)/300).toFixed(3); PXPS=clamp(PXPS,mn,60); }
+// ズームは**2段の対数スケール**: スライダ中央(500)＝既定倍率 ZOOM_DEF。
+// 左半分を「最小〜既定」、右半分を「既定〜最大」に等比で割り当てる。
+// 線形だと長尺動画で最小倍率が極小になり、既定位置がバーの左1割に寄って
+// 縮小側がほとんど操作できなくなるため（縮小・拡大とも半分ずつの操作量を確保）。
+const ZOOM_DEF = 7, ZOOM_MAX = 60, ZPOS = 1000;
+function zoomBounds(){
+  const mn = minPXPS(), mx = ZOOM_MAX;
+  return { mn, mx, def: clamp(ZOOM_DEF, mn*1.01, mx*0.99) };  // def は必ず mn<def<mx
+}
+function pxpsFromPos(p){ const {mn,def,mx}=zoomBounds(), h=ZPOS/2;
+  return p<=h ? mn*Math.pow(def/mn, p/h) : def*Math.pow(mx/def, (p-h)/h); }
+function posFromPxps(v){ const {mn,def,mx}=zoomBounds(), h=ZPOS/2; v=clamp(v,mn,mx);
+  return v<=def ? h*Math.log(v/mn)/Math.log(def/mn)
+                : h + h*Math.log(v/def)/Math.log(mx/def); }
+function syncZoomRange(){ PXPS=clamp(PXPS, minPXPS(), ZOOM_MAX); }
 function applyZoom(anchorT){
   anchorT = anchorT==null?curSrcTime():anchorT;
-  buildTimeline(); $("zoom").value=PXPS; $("zlbl").textContent = PXPS.toFixed(2)+"px/s";
+  buildTimeline(); $("zoom").value=posFromPxps(PXPS); $("zlbl").textContent = PXPS.toFixed(2)+"px/s";
   const wrap=$("tlwrap"); wrap.scrollLeft = (54+t2x(anchorT)) - wrap.clientWidth/2;
 }
-function setZoom(factor){ PXPS=clamp(PXPS*factor,minPXPS(),60); applyZoom(); }
-$("zoom").oninput=()=>{ PXPS=clamp(+$("zoom").value,minPXPS(),60); applyZoom(); };
+function setZoom(factor){ PXPS=clamp(PXPS*factor,minPXPS(),ZOOM_MAX); applyZoom(); }
+$("zoom").oninput=()=>{ PXPS=pxpsFromPos(+$("zoom").value); applyZoom(); };
 
 function buildTimeline(){
   $("tl").style.width = (t2x(D.source.duration)+60)+"px";
@@ -186,6 +235,7 @@ function buildTimeline(){
   const tracks = [
     ["投稿", (D.post_units||[]).map((p,i)=>clip(p.start,p.end,"clip post"+selc("pu",i), `${p.title}（${p.n_ranges}区間/章${p.chapter_ids.length}）`, {pu:i,s0:p.start,s1:p.end}))],
     ["章", D.chapters.map((c,i)=>clip(c.start_at,chEnd(i),"clip chap"+selc("ch",i),(c.chapter_title||c.section_title||"章")+(c.is_required?" ★":""), {ch:i,s0:c.start_at,s1:chEnd(i)}))],
+    ...ovLaneTracks(D.overlays||[]),
     ["Cut", D.segments.map(sg=>clip(sg.start,sg.end, sg.invalid?"clip cut":"clip keep", sg.invalid?"カット":"keep", {seg:sg.id,invalid:sg.invalid,s0:sg.start,s1:sg.end}))],
     ["シーン", D.framing.map((f,i)=>clip(f.start,f.end,"clip fr-"+f.kind+selc("fr",i), f.kind+(f.loading_label?":"+f.loading_label:"")+(f.warning?" ⚠":""), {fr:i,s0:f.start,s1:f.end}))],
     ["調整", D.framing.map((f,i)=>clip(f.start,f.end,"clip adj"+(f.bbox?" hascrop":"")+selc("fr",i), f.bbox?("crop "+f.bbox[2]+"×"+f.bbox[3]):"全画面", {adj:i,s0:f.start,s1:f.end}))],
@@ -203,9 +253,15 @@ function buildTimeline(){
     return !(t>=a-0.001 && t<=b+0.001); };
   $("tracks").querySelectorAll("[data-sub]").forEach(el=>makeDraggable(el,{edges:true,
     onClick:()=>selectSub(+el.dataset.sub, clickSeek(el)), onCommit:(a,b,oa,ob)=>editOp(`/api/subtitle/${el.dataset.sub}`,{start:oa,end:ob},{start:a,end:b})}));
-  $("tracks").querySelectorAll("[data-fr]").forEach(el=>makeDraggable(el,{edges:true,
-    onClick:()=>selectFraming(+el.dataset.fr, clickSeek(el)), onCommit:(a,b,oa,ob)=>editOp(`/api/framing/${el.dataset.fr}`,{start:oa,end:ob},{start:a,end:b})}));
+  $("tracks").querySelectorAll("[data-fr]").forEach(el=>makeDraggable(el,{edges:true, bodyDrag:false,
+    onClick:()=>selectFraming(+el.dataset.fr, clickSeek(el)),
+    onCommit:(a,b,oa,ob,zone)=>{ const url=`/api/framing/${el.dataset.fr}`;   // 端だけ送る＝隣接が連動
+      if(zone==="l") editOp(url,{start:oa},{start:a}); else editOp(url,{end:ob},{end:b}); }}));
   $("tracks").querySelectorAll("[data-adj]").forEach(el=>el.onclick=()=>selectFraming(+el.dataset.adj, clickSeek(el)));
+  $("tracks").querySelectorAll("[data-ov]").forEach(el=>makeDraggable(el,{edges:true,
+    primaryPoints:overlayEdgePoints(+el.dataset.ov),   // 他の重ねの端に最優先で吸着
+    onClick:()=>selectOverlay(+el.dataset.ov, clickSeek(el)),
+    onCommit:(a,b,oa,ob)=>editOp(`/api/overlay/${el.dataset.ov}`,{start:oa,end:ob},{start:a,end:b})}));
   // 章はクリックでシークしない（点マーカー・始端のみドラッグ）
   $("tracks").querySelectorAll("[data-ch]").forEach(el=>makeDraggable(el,{edges:false,
     onClick:()=>selectChapter(+el.dataset.ch, false), onCommit:(a,b,oa)=>editOp(`/api/chapter/${el.dataset.ch}`,{start_at:oa},{start_at:a})}));
@@ -220,8 +276,38 @@ function clip(a,b,cls,label,data){ const d=Object.entries(data).map(([k,v])=>`da
   return `<div class="${cls}" style="${pxs(a,b)}" ${d} title="${label} ${fmt(a)}-${fmt(b)}">${label}</div>`; }
 function subClip(s){ return `<div class="clip sub${selKind==="sub"&&selIdx===s.idx?" sel":""}" style="${pxs(s.source_start,s.source_end)}; background:${s.css_color}" data-sub="${s.idx}" data-s0="${s.source_start}" data-s1="${s.source_end}" title="${s.text}">${s.text}</div>`; }
 
+// 時間が重なるオーバーレイは行を分けて全部掴めるようにする（画像＋テキスト同時表示など）。
+// 開始順に見て「既に空いている最初の行」へ入れる貪欲割当。行数＝同時に重なる最大数。
+function ovLanes(ovs){
+  const lastEnd=[], lanes=[];
+  for(const o of [...ovs].sort((a,b)=>a.source_start-b.source_start || a.idx-b.idx)){
+    let i=lastEnd.findIndex(e=>o.source_start>=e-1e-6);
+    if(i<0){ i=lastEnd.length; lastEnd.push(0); lanes.push([]); }
+    lastEnd[i]=o.source_end; lanes[i].push(o);
+  }
+  return lanes;
+}
+// 「重ね」トラックを必要な行数だけ返す（0件でも1行は出して置き場所を示す）
+function ovLaneTracks(ovs){
+  const lanes=ovLanes(ovs);
+  if(!lanes.length) return [["重ね", []]];
+  return lanes.map((lane,i)=>[lanes.length>1?`重ね${i+1}`:"重ね", lane.map(o=>ovClip(o))]);
+}
+
+// 最上位レイヤーのオーバーレイ（画像/テキスト）クリップ
+function ovClip(o){ const rows=(o.text||"").split("\n");
+  const mosLbl=`▩ ${o.mosaic_type==="gaussian"?"ぼかし":"モザイク"}${o.shape==="ellipse"?"(円)":""}`;
+  const lbl = o.kind==="image" ? "🖼 "+(o.name||"画像")
+            : o.kind==="mosaic" ? mosLbl
+            : "T "+(rows[0]||"")+(rows.length>1?` ⏎${rows.length}行`:"");
+  const tip=(o.kind==="image"?(o.name||"画像"):o.kind==="mosaic"?mosLbl:(o.text||"")).replace(/"/g,"&quot;");
+  const bg = o.kind==="image" ? "#4a4a55" : o.kind==="mosaic" ? "#3d5a5a" : o.css_color;
+  return `<div class="clip ovl${selKind==="ov"&&selIdx===o.idx?" sel":""}" style="${pxs(o.source_start,o.source_end)}; background:${bg}" data-ov="${o.idx}" data-s0="${o.source_start}" data-s1="${o.source_end}" title="${tip}">${lbl}</div>`; }
+
 // 汎用クリップドラッグ: 本体=移動(bodyDrag時) / 端=伸縮(edges) / クリック=onClick
-function makeDraggable(el, {edges, onClick, onCommit, bodyDrag=true}){
+// primaryPoints: 最優先で吸着させる編集点（重ねドラッグ時＝他の重ねの端）。
+// これらに閾値内の候補があれば、通常候補にもっと近い点があってもこちらを選ぶ。
+function makeDraggable(el, {edges, onClick, onCommit, bodyDrag=true, primaryPoints=null}){
   const s0=+el.dataset.s0, s1=+el.dataset.s1, EDGE=7;
   el.addEventListener("mousemove",e=>{ if(dragging)return; const r=el.getBoundingClientRect(), x=e.clientX-r.left;
     el.style.cursor = (edges&&(x<EDGE||x>r.width-EDGE))?"ew-resize":(bodyDrag?"grab":"pointer"); });
@@ -231,15 +317,21 @@ function makeDraggable(el, {edges, onClick, onCommit, bodyDrag=true}){
     const zone = edges&&x<EDGE?"l" : edges&&x>r.width-EDGE?"r" : "move";
     const noop = (zone==="move" && !bodyDrag);
     const startX=e.clientX; let ns0=s0, ns1=s1, moved=false; dragging=true;
-    const SNAPS = snap ? snapPoints(s0,s1) : null;
+    const clean=a=>a.filter(p=>Math.abs(p-s0)>1e-6 && Math.abs(p-s1)>1e-6);  // 自分の端は除外
+    const PRI = (snap && primaryPoints) ? clean(primaryPoints) : null;       // 最優先候補
+    const SNAPS = snap ? snapPoints(s0,s1) : null;                            // 通常候補
     const mm=ev=>{ if(Math.abs(ev.clientX-startX)>3) moved=true; if(noop) return; const dt=(ev.clientX-startX)/PXPS;
       if(zone==="move"){ ns0=s0+dt; ns1=s1+dt; } else if(zone==="l"){ ns0=Math.min(s1-0.2,s0+dt); } else { ns1=Math.max(s0+0.2,s1+dt); }
-      if(SNAPS){ const thr=9/PXPS;
-        if(zone==="move"){ // 長さ維持で両端のうち近い方を編集点に吸着
-          let best=null; for(const p of SNAPS){ for(const [d,edge] of [[Math.abs(ns0-p),0],[Math.abs(ns1-p),1]]) if(d<thr&&(!best||d<best.d)) best={d,off:p-(edge?ns1:ns0)}; }
-          if(best){ ns0+=best.off; ns1+=best.off; } }
-        else { const v=zone==="l"?ns0:ns1; let bp=null; for(const p of SNAPS){ const d=Math.abs(v-p); if(d<thr&&(!bp||d<bp.d)) bp={d,p}; }
-          if(bp){ if(zone==="l") ns0=Math.min(s1-0.2,bp.p); else ns1=Math.max(s0+0.2,bp.p); } } }
+      const thr=9/PXPS;
+      // 端1点を候補群に吸着（近い順に1つ）。move用は両端×候補で最良オフセットを返す。
+      const nearEdge=(v,cands)=>{ let b=null; for(const p of cands){ const d=Math.abs(v-p); if(d<thr&&(!b||d<b.d)) b={d,p}; } return b; };
+      const nearMove=cands=>{ let b=null; for(const p of cands){ for(const [d,edge] of [[Math.abs(ns0-p),0],[Math.abs(ns1-p),1]]) if(d<thr&&(!b||d<b.d)) b={d,off:p-(edge?ns1:ns0)}; } return b; };
+      if(zone==="move"){                       // 長さ維持で両端のうち近い方を吸着（PRI優先→通常）
+        const best = (PRI&&nearMove(PRI)) || (SNAPS&&nearMove(SNAPS));
+        if(best){ ns0+=best.off; ns1+=best.off; }
+      } else { const v=zone==="l"?ns0:ns1;
+        const bp = (PRI&&nearEdge(v,PRI)) || (SNAPS&&nearEdge(v,SNAPS));
+        if(bp){ if(zone==="l") ns0=Math.min(s1-0.2,bp.p); else ns1=Math.max(s0+0.2,bp.p); } }
       ns0=clamp(ns0,0,D.source.duration); ns1=clamp(ns1,0,D.source.duration);
       el.style.left=(54+t2x(ns0))+"px"; el.style.width=Math.max(2,t2x(ns1-ns0))+"px"; };
     const mu=()=>{ document.removeEventListener("mousemove",mm); document.removeEventListener("mouseup",mu); dragging=false;
@@ -251,9 +343,56 @@ function makeDraggable(el, {edges, onClick, onCommit, bodyDrag=true}){
 // ── 編集（即保存＋Undo/Redo） ──
 async function rawPost(url, body){ await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); }
 async function editOp(url, undoBody, redoBody){ await rawPost(url, redoBody); undoStack.push({url,undoBody,redoBody}); redoStack=[]; await load(); }
-async function undo(){ const op=undoStack.pop(); if(!op)return; redoStack.push(op); await rawPost(op.url, op.undoBody); await load(); reselect(); }
-async function redo(){ const op=redoStack.pop(); if(!op)return; undoStack.push(op); await rawPost(op.url, op.redoBody); await load(); reselect(); }
-function reselect(){ if(selKind==="sub")selectSub(selIdx); else if(selKind==="fr")selectFraming(selIdx); else if(selKind==="ch")selectChapter(selIdx); else if(selKind==="pu")selectPostUnit(selIdx); }
+// op は {url,undoBody,redoBody}（POST差し戻し）か {undo:fn,redo:fn}（任意操作）。
+async function undo(){ const op=undoStack.pop(); if(!op)return; redoStack.push(op);
+  if(op.undo) await op.undo(); else await rawPost(op.url, op.undoBody); await load(); reselect(); }
+async function redo(){ const op=redoStack.pop(); if(!op)return; undoStack.push(op);
+  if(op.redo && typeof op.redo==="function") await op.redo(); else await rawPost(op.url, op.redoBody); await load(); reselect(); }
+// ── 重ねのコピー&ペースト（Ctrl+C / Ctrl+V）──
+// バッファには add API へそのまま渡せる形で保持するので、コピー元を消した後でも貼れる。
+let ovCopyBuf=null;
+function copyOverlay(idx){
+  const o=(D.overlays||[])[idx]; if(!o) return false;
+  ovCopyBuf={ kind:o.kind, dur:Math.max(0.1,o.source_end-o.source_start),
+    x:o.x, y:o.y, text:o.text, path:o.path||"", color:o.color, size:o.size, font:o.font,
+    double_border:o.double_border, white_ring:o.white_ring, outer_outline:o.outer_outline,
+    align:o.align, line_spacing:o.line_spacing, scale:o.scale, opacity:o.opacity,
+    w:o.w, h:o.h, mosaic_type:o.mosaic_type, shape:o.shape, strength:o.strength };
+  flashMsg(`重ね(${o.kind==="image"?"画像":o.kind==="mosaic"?"モザイク":"テキスト"})をコピー`);
+  return true;
+}
+async function pasteOverlay(){
+  if(!ovCopyBuf) return;
+  const b=ovCopyBuf, st=curSrcTime();
+  const en=Math.min(D.source.duration, st+b.dur);
+  if(en-st<=0.05){ flashMsg("末尾のため貼り付けできません"); return; }
+  // Undo/Redo で同一物を作り直せるよう ID をクライアントで採番する
+  const id=(Math.random().toString(16).slice(2)+Math.random().toString(16).slice(2)).slice(0,8);
+  const payload={...b, id, start:st, end:en}; delete payload.dur;
+  await rawPost("/api/overlay", payload);
+  undoStack.push({
+    undo: async()=>{ const i=(D.overlays||[]).findIndex(o=>o.id===id);
+                     if(i>=0) await fetch(`/api/overlay/${i}`,{method:"DELETE"}); },
+    redo: async()=>{ await rawPost("/api/overlay", payload); },
+  });
+  redoStack=[];
+  await load();
+  const i=(D.overlays||[]).findIndex(o=>o.id===id);
+  if(i>=0) selectOverlay(i, false);
+}
+// overlay 削除（Ctrl+Zで復元可）。削除時に完全ペイロードを受け取り、Undoで同じIDで再作成する。
+async function deleteOverlay(idx){
+  const r=await (await fetch(`/api/overlay/${idx}`,{method:"DELETE"})).json();
+  const snap=r.overlay;                       // /api/overlay へそのまま再POSTできる完全データ
+  if(snap){ undoStack.push({
+    undo: async()=>{ await rawPost("/api/overlay", snap); },                 // 同一IDで復活
+    redo: async()=>{ const i=(D.overlays||[]).findIndex(o=>o.id===snap.id);  // ID一致を再削除
+                     if(i>=0) await fetch(`/api/overlay/${i}`,{method:"DELETE"}); },
+  }); redoStack=[]; }
+  if(selKind==="ov"&&selIdx===idx){ selKind=null; selIdx=null; $("side").innerHTML="<h3>選択なし</h3>"; }
+  await load();
+}
+function reselect(){ if(selKind==="sub")selectSub(selIdx); else if(selKind==="fr")selectFraming(selIdx); else if(selKind==="ch")selectChapter(selIdx); else if(selKind==="pu")selectPostUnit(selIdx); else if(selKind==="ov")selectOverlay(selIdx); }
 $("uBtn").onclick=undo; $("rBtn").onclick=redo;
 $("snapBtn").onclick=()=>{ snap=!snap; $("snapBtn").classList.toggle("on",snap); };
 $("addSub").onclick=async()=>{ const t=curSrcTime();
@@ -287,7 +426,150 @@ function snapPoints(self0, self1){
   ps.delete(self0); ps.delete(self1);
   return [...ps];
 }
+// 重ねドラッグの最優先スナップ先＝**自分以外の全オーバーレイの端**（start/end）。
+function overlayEdgePoints(selfIdx){
+  const ps=new Set();
+  (D.overlays||[]).forEach(o=>{ if(o.idx===selfIdx) return; ps.add(o.source_start); ps.add(o.source_end); });
+  return [...ps];
+}
 // テキスト入力は即時にローカル反映、保存はデバウンス（フォーカス維持のため side は再構築しない）
+// ＋テキスト: 再生ヘッド位置から既定3秒・画面中央に置く
+$("addOvT").onclick=async()=>{ const t=curSrcTime();
+  const r=await (await fetch("/api/overlay",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({kind:"text",start:t,end:Math.min(D.source.duration,t+3),x:0.5,y:0.45,text:"テキスト"})})).json();
+  await load(); selectOverlay(r.idx, false); };
+// ＋画像 / ドラッグ&ドロップ: 再生ヘッド位置から**1枚5秒ずつ順に**並べる。
+// 複数選択時はファイル名順（ドロップ時のブラウザ順ではなく決定的に）で配置する。
+const OV_IMG_SEC = 5.0;
+async function addImagesSequential(files, {x=0.4, y=0.4} = {}){
+  const imgs=[...files].filter(f=>f.type.startsWith("image/"))
+                       .sort((a,b)=>a.name.localeCompare(b.name,"ja"));
+  if(!imgs.length) return;
+  let t=curSrcTime(), lastIdx=null;
+  for(const f of imgs){
+    const fd=new FormData(); fd.append("file", f);
+    const up=await (await fetch("/api/overlay/upload",{method:"POST",body:fd})).json();
+    const end=Math.min(D.source.duration, t+OV_IMG_SEC);
+    if(end-t<=0.05) break;                       // 動画末尾に達したら打ち切り
+    const r=await (await fetch("/api/overlay",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({kind:"image",start:t,end,x,y,path:up.path})})).json();
+    lastIdx=r.idx; t=end;                         // 次の画像は直後の5秒へ（シーケンシャル）
+  }
+  await load(); if(lastIdx!=null) selectOverlay(lastIdx, false);
+}
+$("addOvI").onclick=()=>$("ovFile").click();
+$("ovFile").onchange=async()=>{ await addImagesSequential($("ovFile").files); $("ovFile").value=""; };
+// ＋モザイク: 再生ヘッド位置から3秒・画面中央に既定サイズの領域を置く
+$("addOvM").onclick=async()=>{ const t=curSrcTime();
+  const r=await (await fetch("/api/overlay",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({kind:"mosaic",start:t,end:Math.min(D.source.duration,t+3),
+      x:0.375,y:0.375,w:0.25,h:0.25,mosaic_type:"pixelate",shape:"rect",strength:16})})).json();
+  await load(); selectOverlay(r.idx, false); };
+
+// ドラッグ&ドロップ: 映像上に落とせばその地点を配置位置に、それ以外は既定位置。
+// 時刻は常に再生ヘッド（＝現在のカーソル位置）から。
+(function initDrop(){
+  const stop=e=>{ e.preventDefault(); e.stopPropagation(); };
+  const hasFiles=e=>[...(e.dataTransfer?.types||[])].includes("Files");
+  document.addEventListener("dragover",e=>{ if(!hasFiles(e)) return; stop(e);
+    e.dataTransfer.dropEffect="copy"; $("boxSrc").classList.add("dropping"); });
+  document.addEventListener("dragleave",e=>{ if(e.relatedTarget) return; $("boxSrc").classList.remove("dropping"); });
+  document.addEventListener("drop",async e=>{
+    if(!hasFiles(e)) return; stop(e); $("boxSrc").classList.remove("dropping");
+    if(!D) return;
+    // 映像コンテンツ矩形の内側に落ちたら、その位置を正規化座標へ
+    let pos={x:0.4,y:0.4}; const rc=contentRect(vid);
+    if(rc && e.clientX>=rc.left && e.clientX<=rc.left+rc.w && e.clientY>=rc.top && e.clientY<=rc.top+rc.h){
+      pos={x:clamp((e.clientX-rc.left)/rc.w,0,1), y:clamp((e.clientY-rc.top)/rc.h,0,1)};
+    }
+    await addImagesSequential(e.dataTransfer.files, pos);
+  });
+})();
+
+// ── ステージ上のオーバーレイ重畳（ドラッグで位置指定・左上基準の正規化座標へ換算）──
+let ovDragging=false;
+// 行送り(px・1080p基準)。合成 overlay.py の line_advance と同じ式（枠込みで1.0倍が非重複）。
+const OV_GLYPH_EM=1.02;
+function ovLineAdvance(o){
+  const border=(o.white_ring??5)+(o.double_border?(o.outer_outline??9):0);
+  return (o.size*OV_GLYPH_EM + 2*Math.max(0,border)) * Math.max(0.05, o.line_spacing??1.0);
+}
+function drawOverlayLayer(t){
+  const ov=$("ovlov"); if(!D || mode==="prev"){ ov.style.display="none"; return; } ov.style.display="block";
+  if(ovDragging) return;
+  const rc=contentRect(vid); const items=(D.overlays||[]).filter(o=>t>=o.source_start-1e-3 && t<=o.source_end+1e-3);
+  const key=rc?items.map(o=>`${o.idx}:${o.x},${o.y},${o.text},${o.size},${o.color},${o.scale},${o.double_border},${o.white_ring},${o.outer_outline},${o.align},${o.line_spacing},${o.w},${o.h},${o.mosaic_type},${o.shape},${o.strength}`).join("|")+`@${rc.w}x${rc.h}|${selIdx}`:"";
+  if(!rc){ ov.innerHTML=""; ov._key=null; return; }
+  if(ov._key===key) return; ov._key=key;
+  const k=rc.h/(D.source.height||1080);   // 出力1080p基準の px を表示スケールへ
+  ov.innerHTML=items.map(o=>{
+    const L=rc.left+o.x*rc.w, T=rc.top+o.y*rc.h;
+    const sel=(selKind==="ov"&&selIdx===o.idx)?" sel":"";
+    if(o.kind==="image"){
+      return `<div class="ovitem${sel}" data-ovi="${o.idx}" style="left:${L}px;top:${T}px;opacity:${o.opacity}">`
+           + `<img src="${o.url}" style="transform:scale(${o.scale*k});transform-origin:left top"></div>`;
+    }
+    if(o.kind==="mosaic"){
+      // bbox領域を枠で示し、backdrop-filter でおおよその見えを重ねる（実効果は合成側）
+      const W=o.w*rc.w, H=o.h*rc.h;
+      const bf = o.mosaic_type==="gaussian"
+        ? `blur(${(o.strength*0.5*k).toFixed(1)}px)`
+        : `blur(${(o.strength*0.35*k).toFixed(1)}px) contrast(1.05)`;
+      const rad = o.shape==="ellipse" ? "border-radius:50%;" : "";
+      return `<div class="ovitem ovmos${sel}" data-ovi="${o.idx}" style="left:${L}px;top:${T}px;`
+           + `width:${W}px;height:${H}px;${rad}backdrop-filter:${bf};-webkit-backdrop-filter:${bf}">`
+           + `<span class="mh tl"></span><span class="mh tr"></span><span class="mh bl"></span><span class="mh br"></span></div>`;
+    }
+    // 二重縁取りのプレビュー: 内=色文字 / 1次枠=白 / 外=同色（合成の見え方に合わせた近似）
+    const wr=(o.white_ring??5)*k, oo=(o.outer_outline??9)*k;
+    const ring=`0 0 ${wr.toFixed(1)}px #fff,0 0 ${(wr*0.6).toFixed(1)}px #fff`;
+    const sh = o.double_border
+      ? `${ring},0 0 ${oo.toFixed(1)}px ${o.css_color},0 0 ${(oo*1.3).toFixed(1)}px ${o.css_color}`
+      : ring;
+    // 行間・揃えは合成(ovLineAdvance)と揃える。\an7/8/9=左上/中央上/右上 に相当する
+    // ← CSSは translateX で表現（left/center/right）。
+    const adv=ovLineAdvance(o)*k, al=o.align||"left";
+    const tx = al==="center" ? "-50%" : al==="right" ? "-100%" : "0";
+    const lh=`${adv.toFixed(2)}px`;
+    return `<div class="ovitem${sel}" data-ovi="${o.idx}" style="left:${L}px;top:${T}px;`
+         + `transform:translateX(${tx});text-align:${al};line-height:${lh};`
+         + `color:${o.css_color};font-family:'${o.font}';font-size:${o.size*k}px;text-shadow:${sh}">`
+         + `${(o.text||"").replace(/</g,"&lt;").replace(/\n/g,"<br>")}</div>`;
+  }).join("");
+  ov.querySelectorAll("[data-ovi]").forEach(el=>attachOverlayDrag(el, +el.dataset.ovi));
+}
+function attachOverlayDrag(el, idx){
+  el.addEventListener("mousedown",e=>{ e.preventDefault(); e.stopPropagation();
+    const o=(D.overlays||[])[idx]; if(!o) return;
+    selectOverlay(idx, false);
+    ovDragging=true; const rc=contentRect(vid);
+    const x0=e.clientX, y0=e.clientY, L=parseFloat(el.style.left), T=parseFloat(el.style.top);
+    // モザイクは角ハンドルでサイズ変更（掴んだ角の対角を固定して伸縮）
+    const hz=[...e.target.classList].find(c=>["tl","tr","bl","br"].includes(c));
+    const isMos=o.kind==="mosaic";
+    const W0=isMos?parseFloat(el.style.width):0, H0=isMos?parseFloat(el.style.height):0;
+    const MIN=8;
+    const mm=ev=>{ const dx=ev.clientX-x0, dy=ev.clientY-y0;
+      if(isMos && hz){
+        let L2=L, T2=T, W2=W0, H2=H0;
+        if(hz==="tl"){ L2=L+dx; T2=T+dy; W2=W0-dx; H2=H0-dy; }
+        else if(hz==="tr"){ T2=T+dy; W2=W0+dx; H2=H0-dy; }
+        else if(hz==="bl"){ L2=L+dx; W2=W0-dx; H2=H0+dy; }
+        else { W2=W0+dx; H2=H0+dy; }
+        if(W2<MIN){ W2=MIN; L2=(hz==="tl"||hz==="bl")?L+W0-MIN:L; }
+        if(H2<MIN){ H2=MIN; T2=(hz==="tl"||hz==="tr")?T+H0-MIN:T; }
+        el.style.left=L2+"px"; el.style.top=T2+"px"; el.style.width=W2+"px"; el.style.height=H2+"px";
+      } else { el.style.left=(L+dx)+"px"; el.style.top=(T+dy)+"px"; } };
+    const mu=()=>{ document.removeEventListener("mousemove",mm); document.removeEventListener("mouseup",mu);
+      ovDragging=false;
+      const nx=clamp((parseFloat(el.style.left)-rc.left)/rc.w,0,1), ny=clamp((parseFloat(el.style.top)-rc.top)/rc.h,0,1);
+      if(isMos && hz){
+        const nw=clamp(parseFloat(el.style.width)/rc.w,0.01,1), nh=clamp(parseFloat(el.style.height)/rc.h,0.01,1);
+        editOp(`/api/overlay/${idx}`,{x:o.x,y:o.y,w:o.w,h:o.h},{x:nx,y:ny,w:nw,h:nh});
+      } else editOp(`/api/overlay/${idx}`,{x:o.x,y:o.y},{x:nx,y:ny}); };
+    document.addEventListener("mousemove",mm); document.addEventListener("mouseup",mu); });
+}
+
 function liveText(url, field, orig, getVal, localApply){
   return ()=>{ const v=getVal(); if(localApply) localApply(v); clearTimeout(saveTmr);
     saveTmr=setTimeout(()=>editOp(url,{[field]:orig},{[field]:v}),350); };
@@ -307,6 +589,108 @@ function selectSub(idx, seek=true){
   $("e_sty").onchange=()=>{ editOp(url,{style:s.style},{style:$("e_sty").value}); };
   $("e_col").onchange=()=>{ const old=D.subtitle_speaker_colors[$("e_spk").value]||"auto"; editOp(`/api/speaker-color`,{speaker:$("e_spk").value,color:old},{speaker:$("e_spk").value,color:$("e_col").value}); };
   if(seek) seekSrc(s.source_start);
+}
+// 字幕と同じ4色パレット（見本ボタン用のCSS色）
+const PAL={red:"#c82828",purple:"#783cb4",blue:"#1e5ac8",green:"#149637"};
+// EyeDropper 非対応環境用: 映像を1回クリックしてその画素色を吸い取る
+function startVideoPick(apply){
+  const box=$("boxSrc"); box.style.cursor="crosshair";
+  const done=e=>{ box.style.cursor=""; box.removeEventListener("click",done,true);
+    e.preventDefault(); e.stopPropagation();
+    const rc=contentRect(vid); if(!rc) return;
+    const cv=document.createElement("canvas"); cv.width=D.source.width; cv.height=D.source.height;
+    const cx=cv.getContext("2d"); try{ cx.drawImage(vid,0,0,cv.width,cv.height); }catch(err){ return; }
+    const px=Math.round((e.clientX-rc.left)/rc.w*cv.width), py=Math.round((e.clientY-rc.top)/rc.h*cv.height);
+    if(px<0||py<0||px>=cv.width||py>=cv.height) return;
+    const d=cx.getImageData(px,py,1,1).data;
+    apply("#"+[d[0],d[1],d[2]].map(v=>v.toString(16).padStart(2,"0")).join(""));
+  };
+  box.addEventListener("click",done,true);
+}
+
+// 最上位レイヤーのオーバーレイを選択して編集（文字色/サイズ/フォント/二重縁取り/位置/尺）
+function selectOverlay(idx, seek=true){
+  selKind="ov"; selIdx=idx; const o=(D.overlays||[])[idx]; if(!o) return; buildTimeline();
+  const url=`/api/overlay/${idx}`;
+  const FONTS=["Meiryo","Yu Gothic UI","MS Gothic","Yu Mincho","BIZ UDPGothic","Arial","Impact"];
+  const isImg = o.kind==="image", isMos = o.kind==="mosaic";
+  const kindLabel = isImg?"画像":isMos?"モザイク":"テキスト";
+  const mosBody = `<div class="row"><div style="flex:1"><label>方式</label><select id="o_mtype">
+      <option value="pixelate" ${o.mosaic_type==="pixelate"?"selected":""}>低解像度(モザイク)</option>
+      <option value="gaussian" ${o.mosaic_type==="gaussian"?"selected":""}>ガウシアン(ぼかし)</option></select></div>
+    <div style="flex:1"><label>形状</label><select id="o_shape">
+      <option value="rect" ${o.shape==="rect"?"selected":""}>矩形</option>
+      <option value="ellipse" ${o.shape==="ellipse"?"selected":""}>円・楕円</option></select></div></div>
+    <label>強さ（${o.mosaic_type==="gaussian"?"ぼかしsigma":"ブロックの粗さ(px)"}・↑↓で1）</label>
+    <input type="number" id="o_str" value="${o.strength}" min="1" max="200" step="1">
+    <div class="row"><div style="flex:1"><label>幅 W(0-1)</label><input type="number" id="o_w" value="${o.w.toFixed(3)}" min="0.01" max="1" step="0.005"></div>
+    <div style="flex:1"><label>高さ H(0-1)</label><input type="number" id="o_h" value="${o.h.toFixed(3)}" min="0.01" max="1" step="0.005"></div></div>`;
+  $("side").innerHTML=`<h3>重ね #${idx}（${kindLabel}）<span style="color:#778">出力 ${fmt(o.out_start)}–${fmt(o.out_end)}</span> <span class="saved" id="sv"></span></h3>
+    ${isImg ? `<div style="color:#ffb300;font-size:12px;margin:2px 0">${o.name||""}</div>
+      <div class="row"><div style="flex:1"><label>拡大率</label><input type="text" id="o_scale" value="${o.scale}"></div>
+      <div style="flex:1"><label>不透明度(0-1)</label><input type="text" id="o_op" value="${o.opacity}"></div></div>`
+    : isMos ? mosBody
+    : `<label>本文（改行=Enter・複数行可・入力で即反映）</label><textarea id="o_text" rows="2" style="resize:vertical">${(o.text||"").replace(/</g,"&lt;")}</textarea>
+      <label>色（見本クリック／ピッカー／スポイトで画面から抽出）</label>
+      <div class="swatches">${["red","purple","blue","green"].map(c=>`<button class="sw${o.color===c?" on":""}" data-sw="${c}" style="background:${PAL[c]}" title="${c}"></button>`).join("")}
+        <input type="color" id="o_pick" value="${o.css_color}" title="カラーピッカー">
+        <button class="t" id="o_eye" title="画面上の色を吸い取る">🎨 スポイト</button>
+        <span id="o_chex" style="color:#9aa;font-size:11px">${o.css_color}</span></div>
+      <div class="row"><div style="flex:1"><label>サイズ(px)</label><input type="number" id="o_size" value="${o.size}" min="8" max="400" step="1"></div>
+      <div style="flex:2"><label>フォント</label><select id="o_font">${FONTS.map(f=>`<option ${o.font===f?"selected":""}>${f}</option>`).join("")}</select></div></div>
+      <label style="display:flex;gap:6px;align-items:center;margin-top:8px"><input type="checkbox" id="o_dbl" ${o.double_border?"checked":""} style="width:auto"> 二重縁取り（字幕と同じ：色文字→白枠→同色外枠）</label>
+      <div class="row"><div style="flex:1"><label>白枠の太さ（↑↓で0.01）</label><input type="number" id="o_wr" value="${o.white_ring}" min="0" max="40" step="0.01"></div>
+      <div style="flex:1"><label>外枠の太さ（↑↓で0.01）</label><input type="number" id="o_oo" value="${o.outer_outline}" min="0" max="60" step="0.01" ${o.double_border?"":"disabled"}></div></div>
+      <div class="row"><div style="flex:1"><label>揃え</label>
+        <div class="alnbtns">${[["left","⇤ 左"],["center","⇔ 中"],["right","右 ⇥"]].map(([a,t])=>`<button class="t${(o.align||"left")===a?" on":""}" data-aln="${a}">${t}</button>`).join("")}</div></div>
+      <div style="flex:1"><label>行間（1.0=枠込みで被らない・↑↓で0.05）</label><input type="number" id="o_ls" value="${o.line_spacing??1.0}" min="0.3" max="4" step="0.05"></div></div>`}
+    <div class="row"><div style="flex:1"><label>X(0-1)</label><input type="text" id="o_x" value="${o.x.toFixed(4)}"></div>
+    <div style="flex:1"><label>Y(0-1)</label><input type="text" id="o_y" value="${o.y.toFixed(4)}"></div></div>
+    <div style="color:#778;font-size:11px;margin:4px 0 8px">${isMos
+      ? "※ソース映像上の枠をドラッグ＝移動／角ハンドル＝サイズ変更。タイムラインの端ドラッグ＝表示区間。即保存。"
+      : "※ソース映像上の枠をドラッグ＝位置指定（左上基準）。タイムラインの端ドラッグ＝表示区間。即保存。"}</div>
+    <div class="row"><button class="t" id="o_del" style="color:#f88">この重ねを削除（Del）</button></div>`;
+  const num=(id,def)=>{ const v=parseFloat($(id).value); return isNaN(v)?def:v; };
+  if(isMos){
+    // モザイク: 方式/形状は即反映（強さの単位表記が変わるのでパネルを作り直す）
+    $("o_mtype").onchange=()=>{ const v=$("o_mtype").value;
+      editOp(url,{mosaic_type:o.mosaic_type},{mosaic_type:v}); o.mosaic_type=v; };
+    $("o_shape").onchange=()=>{ const v=$("o_shape").value;
+      editOp(url,{shape:o.shape},{shape:v}); o.shape=v; };
+    const spinM=(id,field)=>{ let tmr=null; $(id).oninput=()=>{ const v=num(id,o[field]);
+      clearTimeout(tmr); tmr=setTimeout(()=>{ editOp(url,{[field]:o[field]},{[field]:v}); o[field]=v; },220); }; };
+    spinM("o_str","strength"); spinM("o_w","w"); spinM("o_h","h");
+  } else if(!isImg){
+    $("o_text").oninput=liveText(url,"text",o.text,()=>$("o_text").value,v=>{ o.text=v; flash(); });
+    // 色: パレット見本 / ネイティブピッカー / スポイト（EyeDropper API、無ければ映像クリック抽出）
+    const setColor=c=>{ editOp(url,{color:o.color},{color:c}); o.color=c; };
+    $("side").querySelectorAll("[data-sw]").forEach(b=>b.onclick=()=>setColor(b.dataset.sw));
+    $("o_pick").oninput=()=>{ $("o_chex").textContent=$("o_pick").value; };
+    $("o_pick").onchange=()=>setColor($("o_pick").value);
+    $("o_eye").onclick=async()=>{
+      if(window.EyeDropper){                       // Chrome: 画面上のどこからでも吸い取れる
+        try{ const c=await new window.EyeDropper().open(); setColor(c.sRGBHex); }catch(e){}
+      } else { startVideoPick(setColor); }         // 非対応環境は映像クリックで抽出
+    };
+    // ↑↓キー/スピナーで即反映（number入力は input イベントで拾う。連打はliveText同様に間引く）
+    const spin=(id,field,cur)=>{ let tmr=null; $(id).oninput=()=>{ const v=num(id,cur);
+      clearTimeout(tmr); tmr=setTimeout(()=>{ editOp(url,{[field]:o[field]},{[field]:v}); o[field]=v; },220); }; };
+    spin("o_size","size",o.size); spin("o_wr","white_ring",o.white_ring);
+    spin("o_oo","outer_outline",o.outer_outline); spin("o_ls","line_spacing",o.line_spacing??1.0);
+    $("side").querySelectorAll("[data-aln]").forEach(b=>b.onclick=()=>{
+      const v=b.dataset.aln; editOp(url,{align:o.align||"left"},{align:v}); o.align=v; });
+    $("o_font").onchange=()=>{ editOp(url,{font:o.font},{font:$("o_font").value}); o.font=$("o_font").value; };
+    $("o_dbl").onchange=()=>{ const v=$("o_dbl").checked; $("o_oo").disabled=!v;
+      editOp(url,{double_border:o.double_border},{double_border:v}); o.double_border=v; };
+  } else {
+    $("o_scale").onchange=()=>{ const v=num("o_scale",o.scale); editOp(url,{scale:o.scale},{scale:v}); o.scale=v; };
+    $("o_op").onchange=()=>{ const v=num("o_op",o.opacity); editOp(url,{opacity:o.opacity},{opacity:v}); o.opacity=v; };
+  }
+  const applyXY=()=>{ const x=clamp(num("o_x",o.x),0,1), y=clamp(num("o_y",o.y),0,1);
+    editOp(url,{x:o.x,y:o.y},{x,y}); o.x=x; o.y=y; };
+  $("o_x").onchange=applyXY; $("o_y").onchange=applyXY;
+  $("o_del").onclick=()=>deleteOverlay(idx);   // Ctrl+Zで復元可
+  if(seek) seekSrc(o.source_start);
 }
 function selectFraming(idx, seek=true){
   selKind="fr"; selIdx=idx; const f=D.framing[idx]; if(!f) return; buildTimeline();
@@ -366,7 +750,7 @@ function tick(){
       if(cur){ ov.textContent=cur.text; ov.style.color=cur.css_color; ov.style.textShadow=dblShadow(cur.css_color); }
       else ov.textContent="";
       placeOverlay(ov, rcv); }
-    if(spd<2) drawCropOverlay(t);
+    if(spd<2){ drawCropOverlay(t); drawOverlayLayer(t); }
     // 2倍速以上は文字起こしテロップを低頻度更新（毎フレームの再計算をやめて負荷減）
     if(spd>=2){ if(performance.now()-tickerLast>250){ tickerLast=performance.now(); updateTicker(); } }
     else updateTicker();
@@ -447,7 +831,9 @@ function renderResult(t){
   if(rcv.width!==D.source.width){ rcv.width=D.source.width; rcv.height=D.source.height; }
   const reg=framingAt(t);
   // 無変化（停止中の同一フレーム）は再描画スキップ＝軽量。エンコードは一切しない。
-  const key=(reg?reg.start:-1)+"|"+(reg&&reg.bbox?reg.bbox.join(","):"f")+"|"+(vid.currentTime||0).toFixed(2);
+  const ovk=(D.overlays||[]).filter(o=>t>=o.source_start-1e-3&&t<=o.source_end+1e-3)
+    .map(o=>`${o.idx},${o.x},${o.y},${o.text},${o.size},${o.color},${o.scale},${o.opacity},${o.double_border},${o.white_ring},${o.outer_outline},${o.align},${o.line_spacing},${o.w},${o.h},${o.mosaic_type},${o.shape},${o.strength}`).join(";");
+  const key=(reg?reg.start:-1)+"|"+(reg&&reg.bbox?reg.bbox.join(","):"f")+"|"+(vid.currentTime||0).toFixed(2)+"|"+ovk;
   if(key===rcv._key) return; rcv._key=key;
   const ctx=rcv._ctx||(rcv._ctx=rcv.getContext("2d"));
   ctx.fillStyle="#000"; ctx.fillRect(0,0,rcv.width,rcv.height);
@@ -459,6 +845,80 @@ function renderResult(t){
   }
   const b=(reg&&reg.bbox)?reg.bbox:[0,0,D.source.width,D.source.height];  // framing crop
   if(vid.readyState>=2){ try{ ctx.drawImage(vid, b[0],b[1],b[2],b[3], 0,0, rcv.width, rcv.height); }catch(e){} }
+  drawOverlaysToCanvas(ctx, t, b);   // 合成と同じ順序・同じ crop 写像で重ねる
+}
+// 重ねの座標は**ソースフレーム基準**。crop 後の出力(=このcanvas)へ写す係数を返す。
+// 合成側 overlay.place_overlays と同じ式にすること（ズレるとプレビューが嘘になる）。
+function ovMap(b){
+  const bx=b[0], by=b[1], bw=Math.max(1,b[2]), bh=Math.max(1,b[3]);
+  const mx=rcv.width/bw, my=rcv.height/bh;
+  return { mag:mx,
+    X:nx=>(nx*D.source.width  - bx)*mx,
+    Y:ny=>(ny*D.source.height - by)*my,
+    W:nw=>nw*D.source.width *mx,
+    H:nh=>nh*D.source.height*my };
+}
+// レンダ結果canvasにモザイクを実際に描く（合成と同じ方式: 低解像度 or ガウシアン、矩形/楕円）
+function drawMosaicToCanvas(ctx, o, m){
+  const W=rcv.width, H=rcv.height;
+  let rw=Math.max(2,Math.min(W,Math.round(m.W(o.w)))), rh=Math.max(2,Math.min(H,Math.round(m.H(o.h))));
+  let rx=Math.max(0,Math.min(W-rw,Math.round(m.X(o.x)))), ry=Math.max(0,Math.min(H-rh,Math.round(m.Y(o.y))));
+  const tmp=(drawMosaicToCanvas._t ||= document.createElement("canvas"));
+  const tc=tmp.getContext("2d");
+  ctx.save();
+  if(o.shape==="ellipse"){                       // 楕円だけに効かせる
+    ctx.beginPath(); ctx.ellipse(rx+rw/2, ry+rh/2, rw/2, rh/2, 0, 0, Math.PI*2); ctx.clip();
+  } else { ctx.beginPath(); ctx.rect(rx,ry,rw,rh); ctx.clip(); }
+  if(o.mosaic_type==="gaussian"){
+    tmp.width=rw; tmp.height=rh; tc.filter="none";
+    tc.clearRect(0,0,rw,rh); tc.drawImage(rcv, rx,ry,rw,rh, 0,0,rw,rh);
+    ctx.filter=`blur(${Math.max(0.5,o.strength*m.mag).toFixed(1)}px)`;
+    ctx.drawImage(tmp, 0,0,rw,rh, rx,ry,rw,rh);
+    ctx.filter="none";
+  } else {                                        // pixelate: 近傍縮小→近傍拡大
+    const blk=Math.max(2,Math.round(o.strength*m.mag));
+    const dw=Math.max(1,Math.floor(rw/blk)), dh=Math.max(1,Math.floor(rh/blk));
+    tmp.width=dw; tmp.height=dh; tc.imageSmoothingEnabled=false;
+    tc.clearRect(0,0,dw,dh); tc.drawImage(rcv, rx,ry,rw,rh, 0,0,dw,dh);
+    ctx.imageSmoothingEnabled=false;
+    ctx.drawImage(tmp, 0,0,dw,dh, rx,ry,rw,rh);
+    ctx.imageSmoothingEnabled=true;
+  }
+  ctx.restore();
+}
+// レンダ結果canvasへオーバーレイを描く。テキストは合成(ASS)と同じ「色文字→白1次枠→同色外枠」。
+function drawOverlaysToCanvas(ctx, t, b){
+  const items=(D.overlays||[]).filter(o=>t>=o.source_start-1e-3 && t<=o.source_end+1e-3);
+  const m=ovMap(b);
+  // 合成と同じレイヤー順: 画像 → モザイク → (字幕/リボン) → テキスト。
+  // モザイクが掛かるのは映像とユーザー画像だけ＝文字情報にはぼかしを掛けない。
+  for(const o of items){ if(o.kind==="image") drawOverlayItemToCanvas(ctx, o, m); }
+  for(const o of items){ if(o.kind==="mosaic") drawMosaicToCanvas(ctx, o, m); }
+  for(const o of items){ if(o.kind==="text") drawOverlayItemToCanvas(ctx, o, m); }
+}
+function drawOverlayItemToCanvas(ctx, o, m){
+  const X=m.X(o.x), Y=m.Y(o.y);
+  if(o.kind==="image"){
+    const im=(drawOverlaysToCanvas._c ||= {})[o.url] ||= Object.assign(new Image(),{src:o.url});
+    if(im.complete && im.naturalWidth){ ctx.save(); ctx.globalAlpha=o.opacity;
+      const sc=o.scale*m.mag;   // crop 拡大率を反映（合成と同じ）
+      ctx.drawImage(im, X, Y, im.naturalWidth*sc, im.naturalHeight*sc); ctx.restore(); }
+    return;
+  }
+  ctx.save();
+  const size=Math.max(1,o.size*m.mag);
+  ctx.font=`bold ${size}px "${o.font}"`; ctx.textBaseline="top"; ctx.lineJoin="round";
+  ctx.textAlign = o.align==="center" ? "center" : o.align==="right" ? "right" : "left";
+  const lines=(o.text||"").split("\n");
+  // ASS の Outline 値はおおよそ「輪郭の外側への張り出し」。canvas の lineWidth は
+  // 中心線からの太さなので約2倍にして見え方を合わせる。行送りは合成と同じ ovLineAdvance。
+  const wr=(o.white_ring??5)*2*m.mag, oo=(o.outer_outline??9)*2*m.mag;
+  const adv=ovLineAdvance(o)*m.mag;
+  lines.forEach((ln,i)=>{ const y=Y+i*adv;
+    if(o.double_border && oo>0){ ctx.strokeStyle=o.css_color; ctx.lineWidth=wr+oo; ctx.strokeText(ln,X,y); }
+    if(wr>0){ ctx.strokeStyle="#fff"; ctx.lineWidth=wr; ctx.strokeText(ln,X,y); }
+    ctx.fillStyle=o.css_color; ctx.fillText(ln,X,y); });
+  ctx.restore();
 }
 
 // ── ライブ文字起こしテロップ（再生に同期して流れる） ──
@@ -498,13 +958,21 @@ $("tlwrap").addEventListener("mousedown",e=>{
   document.addEventListener("mousemove",mm); document.addEventListener("mouseup",mu);
 });
 // ホイール=再生ヘッド(カーソル)を移動 / Ctrl+ホイール=ズーム（カーソル位置のフレームを固定して拡縮）
+// / Alt+ホイール=トラックの縦スクロール（重ねレーンが増えて縦にはみ出したとき用）
 $("tlwrap").addEventListener("wheel",e=>{
-  e.preventDefault(); const wrap=$("tlwrap");
+  const wrap=$("tlwrap");
+  if(e.altKey){
+    if(wrap.scrollHeight<=wrap.clientHeight) return;   // はみ出していなければ既定動作に任せる
+    e.preventDefault();
+    wrap.scrollTop += e.deltaY;
+    return;
+  }
+  e.preventDefault();
   if(e.ctrlKey){
     const mouseX = e.clientX - wrap.getBoundingClientRect().left;     // ビューポート内x
     const t = x2t(mouseX + wrap.scrollLeft - 54);                     // カーソル直下の時刻
-    PXPS = clamp(PXPS*(e.deltaY<0?1.15:1/1.15), minPXPS(), 60);
-    buildTimeline(); $("zoom").value=PXPS; $("zlbl").textContent=PXPS.toFixed(2)+"px/s";
+    PXPS = clamp(PXPS*(e.deltaY<0?1.15:1/1.15), minPXPS(), ZOOM_MAX);
+    buildTimeline(); $("zoom").value=posFromPxps(PXPS); $("zlbl").textContent=PXPS.toFixed(2)+"px/s";
     wrap.scrollLeft = (54 + t2x(t)) - mouseX;                         // 同じフレームをカーソル位置に保つ
   } else {
     seekSrc(curSrcTime() + e.deltaY/PXPS);  // ホイール量を尺へ換算して再生ヘッド移動（拡大時ほど微細）
@@ -596,11 +1064,14 @@ async function mergeSelected(dir){
 function flashMsg(t){ const e=$("sv"); if(e){ e.textContent=t; clearTimeout(e._t); e._t=setTimeout(()=>e.textContent="",1500); } }
 
 window.addEventListener("keydown",e=>{
-  const k=e.key.toLowerCase(), inField=(e.target.tagName==="INPUT"||e.target.tagName==="SELECT");
+  const k=e.key.toLowerCase(), inField=(e.target.tagName==="INPUT"||e.target.tagName==="SELECT"||e.target.tagName==="TEXTAREA");
   // Undo/Redo はフィールド内でも効かせる
   if((e.ctrlKey||e.metaKey) && k==="z"){ e.preventDefault(); e.shiftKey?redo():undo(); return; }
   if((e.ctrlKey||e.metaKey) && k==="y"){ e.preventDefault(); redo(); return; }
-  if(inField) return;
+  if(inField) return;   // テキスト入力中は通常のコピペ等を優先
+  // 重ねのコピー&ペースト（貼り付け先＝再生ヘッド位置）
+  if((e.ctrlKey||e.metaKey) && k==="c"){ if(selKind==="ov" && copyOverlay(selIdx)) e.preventDefault(); return; }
+  if((e.ctrlKey||e.metaKey) && k==="v"){ if(ovCopyBuf){ e.preventDefault(); pasteOverlay(); } return; }
   if((e.ctrlKey||e.metaKey) && (k==="arrowleft"||k==="arrowright")){ e.preventDefault(); if(!e.repeat) selectNeighbor(k==="arrowleft"?-1:1); return; }
   if(e.altKey && (k==="arrowleft"||k==="arrowright")){ e.preventDefault(); if(!e.repeat) mergeSelected(k==="arrowleft"?-1:1); return; }  // 自動リピート無視
   if(["j","k","l","i","o"," ","arrowleft","arrowright","arrowup","arrowdown","+","-","="].includes(k)) e.preventDefault();
@@ -613,9 +1084,11 @@ window.addEventListener("keydown",e=>{
   else if(k==="b"){ splitAt(); }
   else if(k==="i"){ inP=curSrcTime(); $("inmark").style.display=""; $("inmark").style.left=(54+t2x(inP))+"px"; }
   else if(k==="o"){ outP=curSrcTime(); $("outmark").style.display=""; $("outmark").style.left=(54+t2x(outP))+"px"; }
-  else if(k==="delete"||k==="backspace"){ e.preventDefault(); cutRange(); }  // In/Out範囲を非破壊カット
+  else if(k==="delete"||k==="backspace"){ e.preventDefault();
+    if(selKind==="ov") deleteOverlay(selIdx);  // 重ね選択中＝その重ねを削除（Ctrl+Zで復元）
+    else cutRange(); }                         // それ以外＝In/Out範囲を非破壊カット
 });
-load().then(()=>{ syncZoomRange(); $("zoom").value=PXPS; $("zlbl").textContent=PXPS.toFixed(2)+"px/s";
+load().then(()=>{ syncZoomRange(); $("zoom").value=posFromPxps(PXPS); $("zlbl").textContent=PXPS.toFixed(2)+"px/s";
   setMode("both"); });  // 既定=両方表示（レンダ結果は動的合成で常時利用可）
 window.addEventListener("resize",()=>{ if(D){ syncZoomRange(); applyZoom(); } });
 </script>
