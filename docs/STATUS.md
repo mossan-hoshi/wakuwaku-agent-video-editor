@@ -502,6 +502,18 @@ subtitle_speaker_colors / bgm / post_units`。
 既定 noa だが、ユーザー指示があればそのキャラを使う（例: #102 は **yume**）。`--char <id>` で切替。
 立ち姿とSBV2モデルが揃っているキャラ一覧は `publish/eyecatch_voice.py: NOBETUBE_VOICES`。
 
+### 12.6 概要欄のチャプター条件を**投稿前に弾く**
+YouTubeは条件を1つでも破ると**章を1つも生成しない**（部分的に無視するのではない）。
+#101 は `00:00 - start` → `00:09 - …` の**先頭章9秒**で章リスト全体が無効化されていた。
+- `publish/description.py: chapter_problems(text)`（純関数）＝ 先頭00:00 / 3個以上 / 昇順 /
+  **各章10秒以上**（`MIN_CHAPTER_SECONDS`）を検査。全角数字・全角コロンの時刻行も書式エラーにする。
+- `publish description` は出力後に検査して**異常終了**（ファイルは書くので直せる）。
+  `publish youtube` も投稿直前に再検査する（概要欄は手で直されることがあるため）。
+  どうしても通したい時だけ `--allow-invalid-chapters`。
+- 止まったときの直し方は**短い章を隣と統合**（`chapter apply` からやり直す）。テスト `tests/test_chapter_validation.py`。
+- ⚠️ 条件を満たしていても章が出ないことがある（#102 は形式適合・時刻はリンク化されるのに章なし）。
+  その場合はコード側では直せない＝**Studio の「自動チャプターを許可する」設定／チャンネルの違反警告**を疑う。
+
 ### 11.9 2026-07-23 の進捗と結果
 | 工程 | 状態 |
 |---|---|

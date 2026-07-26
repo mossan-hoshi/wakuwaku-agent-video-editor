@@ -19,8 +19,19 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
+
 from wwedit.chapter.detect import youtube_chapter_lines
 from wwedit.edl.schema import Edl
+
+# YouTube がチャプターを生成する条件（https://support.google.com/youtube/answer/9884579）。
+# **1つでも破ると章リスト全体が無効化され、章が1つも出ない**（#101 は先頭章が9秒で全滅した）。
+MIN_CHAPTER_SECONDS = 10
+MIN_CHAPTER_COUNT = 3
+
+# 行頭のタイムスタンプ。`MM:SS` / `M:SS` / `H:MM:SS`。直後は空白か行末。
+_TS_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?(?=\s|$)")
 
 
 def _ts_line(line: str) -> str | None:
@@ -71,3 +82,67 @@ def build_description(
     blocks.append("\n".join(ts))
 
     return "\n\n".join(blocks).rstrip() + "\n"
+
+
+def _looks_like_timestamp(line: str) -> bool:
+    """「時刻のつもりの行」か（数字で始まり、直後あたりにコロンがある）。
+
+    全角数字/全角コロンで書いた行を**書式エラーとして拾う**ための判定。
+    ``2026年…`` のような数字始まりの本文を拾わないよう、コロンの存在も見る。
+    """
+    return bool(line) and unicodedata.category(line[0]) == "Nd" and any(
+        c in line[:9] for c in ":："
+    )
+
+
+def parse_timestamps(text: str) -> list[tuple[int, str]]:
+    """概要欄から **YouTube が章として読む行**を ``(秒, ラベル)`` で拾う（書式不正は捨てる）。"""
+    out: list[tuple[int, str]] = []
+    for raw in text.splitlines():
+        m = _TS_RE.match(raw.strip())
+        if not m:
+            continue
+        a, b, c = m.group(1), m.group(2), m.group(3)
+        secs = (int(a) * 3600 + int(b) * 60 + int(c)) if c else (int(a) * 60 + int(b))
+        out.append((secs, raw.strip()[m.end():].strip(" -–—\t")))
+    return out
+
+
+def _mmss(sec: int) -> str:
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def chapter_problems(text: str) -> list[str]:
+    """概要欄が YouTube のチャプター条件を満たすか検査し、**違反の説明**を返す（空＝OK）。
+
+    章は「条件を1つでも破ると全部出ない」仕様なので、**投稿前に弾く**のが唯一の防ぎ方。
+    検査するのは公式の条件そのもの: 先頭 ``00:00`` / 3個以上 / 昇順 / **各章10秒以上**。
+    加えて、全角数字・全角コロンで書かれた時刻行（YouTube は認識しない）を書式エラーにする。
+    """
+    problems: list[str] = []
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if _looks_like_timestamp(line) and not _TS_RE.match(line):
+            problems.append(f"時刻の書式が不正（半角の M:SS / H:MM:SS ＋空白）: {line[:30]!r}")
+
+    stamps = parse_timestamps(text)
+    if not stamps:
+        return problems + ["タイムスタンプ行がありません"]
+
+    if stamps[0][0] != 0:
+        problems.append(f"先頭が 00:00 ではありません（{_mmss(stamps[0][0])}）")
+    if len(stamps) < MIN_CHAPTER_COUNT:
+        problems.append(f"章が {len(stamps)} 個（{MIN_CHAPTER_COUNT} 個以上必要）")
+
+    for (s0, l0), (s1, l1) in zip(stamps, stamps[1:], strict=False):
+        if s1 <= s0:
+            problems.append(f"時刻が昇順ではありません: {_mmss(s0)} → {_mmss(s1)}")
+        elif s1 - s0 < MIN_CHAPTER_SECONDS:
+            problems.append(
+                f"章が {s1 - s0} 秒（{MIN_CHAPTER_SECONDS} 秒以上必要）: "
+                f"{_mmss(s0)} {l0!r} → {_mmss(s1)} {l1!r}"
+            )
+    return problems

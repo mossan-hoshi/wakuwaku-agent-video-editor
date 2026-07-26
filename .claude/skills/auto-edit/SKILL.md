@@ -54,6 +54,9 @@ CLI呼び出し・LLM工程の判断/dispatch・目視QA・尺ループ・継続
 12. **intro-builder スキル**: イントロ生成（服装非重複/尺/QAは intro-builder が判断・**台本は承認済みのものを使う**）。生成物を見せ**自動で次へ**。`publish intro-compose` で仕上げ合成（本編先頭に連結）。
 13. `[CLI]` **[L]**: サムネは **`publish thumbnail --char <キャラ> --prompt "<文字・配色・構図・表情まで記述>"`＝nano banana 2 一発生成**（キャラ・背景・日本語タイトル文字を一括描画。立ち姿参照で絵柄/キャラ固定。PIL帯合成は廃止＝[[thumbnail-oneshot-nano-banana]]）／タイトル・要約を書き `publish description`。**アイキャッチ挿入時は `publish description --chapter-lines-file <*_ec_chapters.txt>`** で補正章時刻を反映。見せて**自動で次へ**。
     ※**サムネ/イントロのキャラは回ごとに指定されうる**（既定 noa。ユーザー指示があればそのキャラ＝`--char yume` 等）。
+    ※`publish description` は最後に**YouTubeのチャプター条件**（先頭00:00／3個以上／昇順／**各章10秒以上**）を検査し、
+      破っていれば異常終了する（条件を1つでも破ると章が**1つも出ない**＝#101 は先頭章9秒で全滅した）。
+      止まったら**短い章を隣と統合**して `chapter apply` からやり直す。`publish youtube` も投稿直前に同じ検査をする。
 13. **=== G3 投稿前 最終承認 ===** 完成動画＋サムネ＋概要欄を提示→承認後 `publish youtube --video <mp4>`（token有れば `--no-dry-run`、無ければ dry-run で JSON 生成し G1 に差し戻し）。
 
 ## 1収録→複数投稿（post-unit ループ）

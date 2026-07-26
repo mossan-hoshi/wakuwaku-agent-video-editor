@@ -25,12 +25,18 @@ def description(
         -1, help="投稿単位[K]。その単位の章で概要欄を作る（-1=収録まるごと）"),
     chapter_lines_file: Path = typer.Option(
         None, help="章行を明示上書き（[H]アイキャッチ挿入時の補正章行 *_ec_chapters.txt）"),
+    allow_invalid_chapters: bool = typer.Option(
+        False, "--allow-invalid-chapters",
+        help="章がYouTubeの条件を満たさなくても異常終了しない（既定は弾く）"),
 ) -> None:
     """YouTube 概要欄を**チャンネル実フォーマット**で組み立てる。
 
     形式: ``Agenda「テーマ」`` → 関連リンク(任意) → ``#タグ`` → ``00:00 - start`` 以下の
     タイムスタンプ。要約/AI免責/チャンネルURL/タイトル再掲は**入れない**（実投稿に無い）。
     タイトルは動画 snippet 側で別途付ける。`--post-unit-index N` で単位内の章・時刻。
+
+    最後に**章がYouTubeの条件を満たすか検査**し、破っていれば（ファイルは書いた上で）
+    異常終了する。1つでも破ると章リストが丸ごと無効化されるため（#101 の先頭章9秒）。
     """
     from wwedit.publish.description import build_description
 
@@ -73,6 +79,24 @@ def description(
     n_ch = len(ch_lines) if ch_lines is not None else len(edl.chapters or [])
     rprint(f"[green]概要欄[/]: {out_path}（Agenda/{'リンク' if links else '—'}/"
            f"{'#タグ' if hashtags else '—'}/タイムスタンプ{n_ch}）")
+    _check_chapters(text, allow_invalid=allow_invalid_chapters)
+
+
+def _check_chapters(text: str, *, allow_invalid: bool = False) -> None:
+    """概要欄の章がYouTubeの条件を満たすか検査し、破っていれば止める（共通処理）。"""
+    from wwedit.publish.description import chapter_problems
+
+    problems = chapter_problems(text)
+    if not problems:
+        return
+    rprint("[red]YouTubeが章を生成しない概要欄です[/]（1つでも破ると章は1つも出ません）:")
+    for p in problems:
+        rprint(f"  - {p}")
+    if allow_invalid:
+        rprint("[yellow]--allow-invalid-chapters のため続行します[/]")
+        return
+    rprint("[dim]章の区切りを直す（短い章は隣と統合）か --allow-invalid-chapters[/]")
+    raise typer.Exit(1)
 
 
 @publish_app.command()
@@ -256,6 +280,9 @@ def youtube(
     dry_run: bool = typer.Option(
         True, help="既定True＝本体JSONを書くだけ（キー不要・検証用）。--no-dry-run で実投稿"
     ),
+    allow_invalid_chapters: bool = typer.Option(
+        False, "--allow-invalid-chapters",
+        help="章がYouTubeの条件を満たさなくても投稿する（既定は弾く）"),
 ) -> None:
     """[K] 動画を YouTube へ投稿（既定 dry-run＝メタデータ検証のみ・キー不要）。
 
@@ -273,6 +300,8 @@ def youtube(
         raise typer.Exit(1)
     title = tfile.read_text(encoding="utf-8").strip() if tfile.exists() else "わくわくべんきょ会"
     desc = dfile.read_text(encoding="utf-8")
+    # 概要欄は生成後に手で直されることがある。**投稿直前がチャプター条件の最後の砦**。
+    _check_chapters(desc, allow_invalid=allow_invalid_chapters)
     tag_list: list[str] | None = None
     if no_tags:
         tag_list = []
