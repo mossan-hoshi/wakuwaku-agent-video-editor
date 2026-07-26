@@ -307,6 +307,8 @@ def generate_eyecatch(
     *,
     seed: int = 0,
     jingle: str | Path | None = None,
+    voice: str | Path | None = None,
+    voice_name: str = "",
     duration: float = 2.0,
     jingle_offset: float | None = None,
     logo_path: str | Path = LOGO,
@@ -314,26 +316,44 @@ def generate_eyecatch(
     out_h: int = 1080,
     fps: int = 30,
 ) -> Path:
-    """2秒アイキャッチ mp4 生成（**白地インク有機**＋タイトル＋ロゴ＋ジングル・seed で変化）。"""
+    """2秒アイキャッチ mp4 生成（**白地インク有機**＋タイトル＋ロゴ＋音・seed で変化）。
+
+    音は **``voice``（のべつべ！キャラの一言・既定の運用）** か ``jingle``（旧・音楽）。
+    ``voice`` 指定時はイントロと同じ**右上のロゴ＋キャラ名バッジ**を出し、声が2秒に収まらなければ
+    尺を声に合わせて伸ばす（言い切る前に切らない）。
+    """
     rng = random.Random(seed)
     out_path = Path(out_path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp())
 
+    logo_path = Path(logo_path)
+    has_logo = logo_path.exists()
+    use_voice = bool(voice)
+    if use_voice:
+        jingle = None
+        vdur = _audio_dur(voice)
+        duration = max(duration, round(vdur + 0.45, 3))  # 語尾を切らない
+
     ink_mp4 = _render_ink(work / "ink.mp4", seed=seed, duration=duration,
                           out_w=out_w, out_h=out_h, fps=fps)
     title_png = _title_card(title, work / "title.png", w=out_w, h=out_h)
 
-    logo_path = Path(logo_path)
-    has_logo = logo_path.exists()
-    has_aud = bool(jingle)
+    # 右上バッジ（ロゴ＋キャラ名）＝イントロと同一の作り。voice のときだけ出す。
+    badge_png = None
+    if use_voice and voice_name and has_logo:
+        from wwedit.publish.intro_compose import _badge
+
+        badge_png = _badge(voice_name, logo_path, work / "badge.png", size=104)
+
+    has_aud = bool(jingle) or use_voice
     off = 0.0
-    if has_aud:
+    if jingle:
         jdur = _audio_dur(jingle)
         off = jingle_offset if jingle_offset is not None else (
             round(rng.uniform(0, max(0.0, jdur - duration - 0.1)), 2) if jdur > duration else 0.0)
 
-    # 入力: 0=インク背景 1=title (2=logo) (3=jingle)
+    # 入力: 0=インク背景 1=title (2=logo|badge) (3=音)
     t_title = round(duration * 0.32, 3)   # インク展開後にタイトル登場
     fin = max(1, int(fps * 0.12))
     fout = max(1, int(fps * (duration - 0.26)))
@@ -342,25 +362,42 @@ def generate_eyecatch(
         "[0:v][ti]overlay=0:0[vt]",
     ]
     last = "vt"
-    if has_logo:
-        fil.append("[2:v]scale=170:170[lg]")
-        fil.append(f"[{last}][lg]overlay=W-w-44:H-h-40[vl]")
+    # voice のときは右上バッジ（ロゴ＋キャラ名）、従来は右下ロゴ。
+    overlay_png = badge_png if badge_png is not None else (logo_path if has_logo else None)
+    if overlay_png is not None:
+        if badge_png is not None:
+            fil.append("[2:v]null[lg]")
+            fil.append(f"[{last}][lg]overlay=W-w-28:24[vl]")
+        else:
+            fil.append("[2:v]scale=170:170[lg]")
+            fil.append(f"[{last}][lg]overlay=W-w-44:H-h-40[vl]")
         last = "vl"
     # 端は白へフェード（インク世界観・黒落ちにしない）
     fil.append(f"[{last}]fade=in:0:{fin}:color=white,"
                f"fade=out:{fout}:{fin}:color=white[vout]")
     amap = None
     if has_aud:
-        aidx = 3 if has_logo else 2
-        fil.append(f"[{aidx}:a]afade=in:st=0:d=0.2,afade=out:st={duration - 0.3}:d=0.3[aout]")
+        aidx = 3 if overlay_png is not None else 2
+        if use_voice:
+            # 声は切らない：頭を少しだけ遅らせ、末尾だけ軽くフェード。
+            fil.append(
+                f"[{aidx}:a]adelay=120|120,apad,atrim=0:{duration},"
+                f"afade=out:st={max(0.0, duration - 0.25)}:d=0.25[aout]"
+            )
+        else:
+            fil.append(
+                f"[{aidx}:a]afade=in:st=0:d=0.2,afade=out:st={duration - 0.3}:d=0.3[aout]"
+            )
         amap = "[aout]"
 
     # タイトルは alpha フェードするため -loop で全尺フレーム化（静止画1枚だと fade が効かない）
     cmd = [ffmpeg_path(), "-y", "-i", str(ink_mp4),
            "-loop", "1", "-framerate", str(fps), "-t", f"{duration}", "-i", str(title_png)]
-    if has_logo:
-        cmd += ["-i", str(logo_path)]
-    if has_aud:
+    if overlay_png is not None:
+        cmd += ["-i", str(overlay_png)]
+    if use_voice:
+        cmd += ["-i", str(Path(voice).resolve())]
+    elif jingle:
         cmd += ["-ss", f"{off}", "-t", f"{duration}", "-i", str(Path(jingle).resolve())]
     cmd += ["-filter_complex", ";".join(fil), "-map", "[vout]"]
     if amap:

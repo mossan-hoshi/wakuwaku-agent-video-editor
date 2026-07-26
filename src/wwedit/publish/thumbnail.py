@@ -40,10 +40,12 @@ def generate_image(
     reference_images: list[tuple[str, bytes]] | None = None,
     api_key: str | None = None,
     timeout: int = 180,
+    temperature: float | None = None,
 ) -> bytes:
     """Gemini ネイティブ画像生成で画像バイト列(PNG)を返す。
 
     reference_images: [(mime, bytes), ...] をプロンプト前に参照として渡す（画風/ロゴ一貫性）。
+    temperature: 未指定はモデル既定。
     """
     key = api_key or _api_key()
     parts: list[dict] = []
@@ -58,6 +60,8 @@ def generate_image(
             "imageConfig": {"aspectRatio": aspect_ratio, "imageSize": image_size},
         },
     }
+    if temperature is not None:
+        body["generationConfig"]["temperature"] = temperature
     req = urllib.request.Request(
         _ENDPOINT.format(model=model),
         data=json.dumps(body).encode(),

@@ -30,6 +30,8 @@ def _duration(path: str | Path) -> float:
 _BREAK_AFTER = "をてにはがでともやへの、"
 # 折った後の行がこれ未満になる位置では折らない（「…続報で / す。」のような孤立を防ぐ）。
 _MIN_TAIL = 3
+# **行頭禁則**: これらを次行の先頭に置かない（「MCP対応と / 、ローカル…」を防ぐ）。
+_NO_LINE_START = "、。，．・…！？!?）)」』】〉》〕ゝ々ー"
 
 
 def _atomic_spans(s: str) -> list[tuple[int, int]]:
@@ -64,7 +66,10 @@ def _split_long(s: str, max_line: int) -> list[str]:
     spans = _atomic_spans(s)
 
     def ok(i: int) -> bool:
-        return _breakable(s, i, spans) and len(s) - (i + 1) >= _MIN_TAIL
+        # 次行の頭が行頭禁則文字（、。）等）になる位置では折らない
+        return (_breakable(s, i, spans)
+                and len(s) - (i + 1) >= _MIN_TAIL
+                and s[i + 1] not in _NO_LINE_START)
 
     cand = [i for i, ch in enumerate(s[:-1]) if ch in _BREAK_AFTER and ok(i)]
     if not cand:  # 助詞が無ければ、トークンを割らない位置のうち中央に最も近い所で折る

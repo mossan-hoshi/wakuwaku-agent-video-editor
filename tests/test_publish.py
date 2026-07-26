@@ -97,6 +97,20 @@ def test_intro_wrap_script():
         assert line[-1] in "。！？をてにはがでともやへの、"
 
 
+def test_intro_wrap_never_starts_line_with_punctuation():
+    """行頭禁則: 、。）」等を次行の先頭に置かない。
+
+    実際に踏んだ: 「MCP対応と」/「、ローカルLLMの…」と読点が行頭に落ちた（#102 イントロ）。
+    """
+    from wwedit.publish.intro_compose import wrap_script
+
+    src = "ゆめです。今日はComfyUIのMCP対応と、ローカルLLMの速度検証です。詳しくは本編でどうぞ。"
+    lines = wrap_script(src).split("\n")
+    assert "".join(lines) == src  # 文字落ちなし
+    for line in lines:
+        assert line[0] not in "、。，．・…！？!?）)」』】〉》〕"
+
+
 _INTRO_SRC = "ノアです。今日は小ネタと、タニグチさんのComfyUI MCP検討の続報です。では本編どうぞ"
 
 

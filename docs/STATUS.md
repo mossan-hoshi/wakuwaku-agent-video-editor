@@ -30,12 +30,14 @@ subtitle_speaker_colors / bgm / post_units`。
 1. **ingest**: 取り込み・正規化（`ingest` group）。
 2. **transcribe**: WhisperX で word単位STT → `edl.utterances`（`transcribe`）。
 3. **cut**: 無音/フィラー/NGワードカット → `edl.segments`（`cut`。無音=`auto-vad --refine`動的閾値、フィラー=filler-selectorスキル、NGワード=`cut ngwords`＝.env `WWEDIT_CUT_NGWORDS` に言及した発話をまるごとカット）。
+   ※**画面**に写ったNG語はカットではなく `privacy ng-mosaic` でモザイク（§12.3）。
 4. **framing**:
    - `framing scenes <edl>`: codecサイズ動き検出で安定区間 → `edl.framing`（static / pending）。
    - `framing classify-motion <edl>`: pending を オプティカルフローで loading(画面切替) / pending(動画) に分類。
    - `framing assign <edl>`: **既定=保守的に全画面(no_crop)**。`--aggressive` で OmniParser判定+固定箱（過剰crop注意）。
    - **`framing crop-apply <edl>`**: 学習済み専用モデル(`crop_model.pt`)で static 区間の代表フレームを推論し
      `framing.bbox` へ一括書き戻す（既定 device=cpu・数十秒）。`compose --framed`/編集ツールの crop枠に反映。
+     **既定で「全画面を残さない」**＝bbox が付かなかった区間へ上下左右1割の既定トリムを入れる（§12.2）。
    - **`framing crop-train`**（任意・再学習）: 全 crop アノテで本番モデルを再学習し `crop_model.pt` を更新（重いGPU・§2の規律厳守）。
    - `framing loading-clips`（任意）/ `framing omni-cache`（評価用）。
 5. **chapter**:
@@ -451,6 +453,54 @@ subtitle_speaker_colors / bgm / post_units`。
 
 ⚠️ **投稿済みの #101 は修正前の合成**（リボン/字幕がぼけた版・座標も旧解釈）。
 作り直す場合は `compose video --framed --subtitles --chapter-ribbon --overlays` から。
+
+---
+
+## 12. 3回目の実走（2026-07-06 収録・#102）で確定した仕様変更（2026-07-26・ユーザー指示）
+
+いずれも**恒久仕様**。過去回の挙動とは変わるので、以前の記述より本節が優先。
+
+### 12.1 アイキャッチの音＝音楽ジングル廃止 → のべつべ！キャラの「一言」ボイス
+- `publish/eyecatch_voice.py`（新規）が **SBV2日本語モデルを持つキャラから章ごとにランダム選択**し、
+  「つ～ぎ！」「さてと」「お楽しみに！」等の**短い一言を都度合成**する（`VOICE_LINES`・`NOBETUBE_VOICES`）。
+  seed 決定的＝再レンダリングで同じ結果。**読みはかな書き**（SBV2は漢字/英字を誤読＝§11.5）。
+- `generate_eyecatch(voice=..., voice_name=...)` は**イントロと同じ右上バッジ（ロゴ＋キャラ本名）**を出し、
+  声が2秒に収まらなければ**尺を声に合わせて伸ばす**（語尾を切らない）。従来の右下ロゴは jingle 時のみ。
+- `compose video --eyecatch` の `--eyecatch-voice` が**既定ON**。SBV2サーバ未起動なら
+  `--eyecatch-jingle-dir` の音楽へ**自動退避**（アイキャッチ自体は必ず出す）。
+- 実測: 合成1本 1.0〜2.5秒・章ごとにキャラと台詞が変わることを実機確認（priya/souta/suzu）。
+  テスト `tests/test_eyecatch_voice.py`（キャラに表示名がある/読みがかな/seed決定的/章ごとに変化）。
+
+### 12.2 フレーミングは「全画面(no_crop)を出さない」＝既定トリム上下左右1割
+- `framing/default_trim.py`（新規）＝ bbox が付かなかった区間へ**中央80%×80%**（16:9維持）を書き込む。
+  `framing crop-apply` が**既定で自動実行**（`--no-default-trim` で従来の全画面）。単体 CLI は `framing default-trim`。
+- EDL へ**明示的に書き戻す**ので編集ツールの「調整」トラックに枠が出て G2 で手直しでき、そのまま学習データにもなる。
+- 実測(2026-07-06): モデル推論 66区間＋既定トリム 69区間＝**135区間すべてに crop 枠**（全画面ゼロ）。
+  テスト `tests/test_default_trim.py`。
+
+### 12.3 画面のNGワードは**カットせずモザイクで隠す**
+- `privacy ng-mosaic <edl>` ＝ 画面OCRで `.env` の `WWEDIT_MASK_TERMS` ∪ `WWEDIT_CUT_NGWORDS` に当たった箇所へ
+  **大きめのモザイク overlay を自動付与**（`privacy/ocr_mosaic.py`）。本編の流れを切らないためカットはしない。
+  座標は**ソースフレーム基準**（§11.10の確定仕様）で `EDL.overlays` に入り、G2 で位置/サイズを手直しできる。
+- 検出boxは `margin=0.8`（四方に寸法の8割）＋最小6%で**ざっくり大きめ**に広げ、ヒットした代表フレームの
+  **framing区間まるごと**を覆う（区間内は同じ画面が写り続けるため。サンプル±padでは隠し漏れる）。
+- OCRはフル画面（crop で見えなくなる想定に頼らない＝G2で crop を広げても漏れない安全側）。
+- 語そのものはログ・返り値・EDLのどこにも出さない（件数のみ報告）。
+- 既知の限界: **OCRが1語を複数boxへ割ると取りこぼす**（box単位の部分一致のため）。2026-07-06 では
+  フレーム内全box連結でも一致0＝実害なしを確認済み。必要になったら行単位の box 連結を実装する。
+  テスト `tests/test_ocr_mosaic.py`。
+
+### 12.4 画面OCRは**1回だけ**走らせて共有（二重推論の解消）
+- `ocr/screen_scan.py`（新規）＝ framing 区間の代表フレーム（＋長区間は30s毎に追加）をフル画面OCRし
+  **`data/<date>/screen_ocr.json` にキャッシュ**。`chapter screen-text` と `privacy ng-mosaic` は
+  **同じキャッシュを読む**（[[cache-model-forward-not-resweep]]）。用途別の絞り込みは `boxes_within` で後処理。
+- 実測(2026-07-06): 161フレーム・6858 box を1回OCR（約25分）→ その後の `chapter screen-text` は**1.4秒**。
+  ⚠️ 以前の設計（kept区間を2〜3秒間隔で再走査）は**同じ推論を二重に払う誤り**で、600秒制限も超えた。
+  テスト `tests/test_screen_scan.py`。
+
+### 12.5 サムネ/イントロのキャラは回ごとに指定されうる
+既定 noa だが、ユーザー指示があればそのキャラを使う（例: #102 は **yume**）。`--char <id>` で切替。
+立ち姿とSBV2モデルが揃っているキャラ一覧は `publish/eyecatch_voice.py: NOBETUBE_VOICES`。
 
 ### 11.9 2026-07-23 の進捗と結果
 | 工程 | 状態 |

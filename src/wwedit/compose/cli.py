@@ -34,9 +34,11 @@ def video(
     post_unit_index: int = typer.Option(
         -1, help="投稿単位[K]。0始まりのindexでその単位の区間だけ合成（-1=収録まるごと）"),
     eyecatch: bool = typer.Option(
-        False, help="[H] 各チャプター冒頭に2秒アイキャッチ(generative art＋ジングル)を挿入"),
+        False, help="[H] 各チャプター冒頭に2秒アイキャッチ(generative art＋キャラの一言)を挿入"),
+    eyecatch_voice: bool = typer.Option(
+        True, help="アイキャッチの音＝のべつべ!キャラの一言(SBV2・章ごとにランダム＋右上に名前)"),
     eyecatch_jingle_dir: Path = typer.Option(
-        None, help="アイキャッチのジングル群フォルダ（章ごとに seed でランダム選曲）"),
+        None, help="音声合成できない時に使う音楽ジングル群（退避用・章ごとに seed で選曲）"),
     chapter_ribbon: bool = typer.Option(
         False, help="左上に収録日＋章名の2段リボンを常時表示（章ごとに話者色で色分け）"),
     overlays: bool = typer.Option(
@@ -128,10 +130,11 @@ def video(
             from wwedit.compose.eyecatch_insert import insert_eyecatches
 
             ec_out = result.with_name(result.stem + "_ec.mp4")
-            rprint(f"[dim]アイキャッチ挿入中（全章冒頭・ジングル={eyecatch_jingle_dir}）...[/]")
+            snd = "キャラの一言(SBV2)" if eyecatch_voice else f"ジングル={eyecatch_jingle_dir}"
+            rprint(f"[dim]アイキャッチ挿入中（全章冒頭・音={snd}）...[/]")
             try:
                 ec_path, ch_lines = insert_eyecatches(
-                    result, edl, ec_out, ranges=sel_ranges,
+                    result, edl, ec_out, ranges=sel_ranges, voice=eyecatch_voice,
                     jingle_dir=eyecatch_jingle_dir, crf=crf, preset=preset,
                 )
             except (RuntimeError, ValueError) as e:

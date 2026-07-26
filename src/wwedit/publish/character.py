@@ -38,6 +38,29 @@ def full_name(char: str) -> str:
     """キャラの本名フルネーム（未登録は先頭大文字のIDで代替）。"""
     return FULL_NAME.get(char, char.capitalize())
 
+
+# キャラ別の**素の表情**（novtube `web/docs/mascot.md` の設定が正）。
+# ⚠️ 全キャラ一律で「笑顔」にしない＝**キャラ崩れ**になる（2026-07-26 ユーザー指摘）。
+# 例: ゆめは「ボソボソ声でジト目」「眠そうなピンクの目」「人見知り」＝満面の笑みは設定違反。
+EXPRESSION = {
+    "noa": "gentle friendly smile, relaxed and warm",
+    "yume": "deadpan half-lidded sleepy eyes (jito-me), NO smile, flat unimpressed "
+            "expression, slightly aloof and shy",
+    "tsukasa": "calm confident expression, faint smile",
+    "ritsu": "composed dignified expression, lips slightly parted as if announcing",
+    "reika": "soft mature smile, calm and collected",
+    "suzu": "curious bright expression, small smile",
+    "souta": "easygoing neutral expression, faint friendly smile",
+    "priya": "bright open smile, energetic",
+    "kasumi": "gentle calm expression, soft smile",
+}
+_DEFAULT_EXPRESSION = "natural neutral expression"
+
+
+def expression_of(char: str) -> str:
+    """キャラの素の表情指示（mascot.md 準拠）。未登録は中立（勝手に笑顔にしない）。"""
+    return EXPRESSION.get(char, _DEFAULT_EXPRESSION)
+
 # 参照画像に必ず付ける同一性維持の制約（先頭固定）。
 IDENTITY_CONSTRAINT = (
     "The reference image is the original character. STRICTLY maintain the EXACT same "
@@ -45,10 +68,10 @@ IDENTITY_CONSTRAINT = (
     "and proportions, same illustration style). Do NOT redesign the character. "
     "Generate a NEW portrait of the SAME character, changing ONLY the following: "
 )
-# リップシンク向けの構図（末尾固定）。
+# リップシンク向けの構図（末尾固定）。**表情はキャラ別**（`EXPRESSION`）に差し込む。
 LIPSYNC_FRAMING = (
     " Framing for lip-sync: upper body bust-up, facing camera nearly front (slight 3/4), "
-    "gentle friendly smile, mouth closed, face occupies at least 40% of the frame, "
+    "{expression}, mouth closed, face occupies at least 40% of the frame, "
     "relatively clean background. 16:9 aspect. NO TEXT, no watermark."
 )
 
@@ -63,9 +86,13 @@ def resolve_character_ref(char: str, assets_dir: str | Path = DEFAULT_ASSETS) ->
     return sorted(hits)[0]
 
 
-def build_prompt(situation: str) -> str:
-    """同一性制約＋シチュ（呼び出し側の創作）＋リップシンク構図 を結合した最終プロンプト。"""
-    return IDENTITY_CONSTRAINT + situation.strip() + LIPSYNC_FRAMING
+def build_prompt(situation: str, char: str = "") -> str:
+    """同一性制約＋シチュ（呼び出し側の創作）＋リップシンク構図 を結合した最終プロンプト。
+
+    表情は ``char`` の設定（mascot.md 準拠の `EXPRESSION`）を使う＝**勝手に笑顔にしない**。
+    """
+    return (IDENTITY_CONSTRAINT + situation.strip()
+            + LIPSYNC_FRAMING.format(expression=expression_of(char)))
 
 
 def generate_character_image(
@@ -79,7 +106,7 @@ def generate_character_image(
     """キャラ参照＋同一性制約＋シチュで開始フレームを生成して保存する。"""
     ref = resolve_character_ref(char, assets_dir)
     data = generate_image(
-        build_prompt(situation), model=model, aspect_ratio="16:9", image_size="2K",
+        build_prompt(situation, char), model=model, aspect_ratio="16:9", image_size="2K",
         reference_images=[("image/webp", ref.read_bytes())],
     )
     return save_image(data, out_path)
