@@ -38,19 +38,46 @@ def screen_text(
     append_input: bool = typer.Option(
         True, help="chapter_input.tsv 末尾に画面テキスト文脈を追記する"
     ),
+    refresh: bool = typer.Option(False, help="OCRキャッシュを作り直す（既定は再利用）"),
 ) -> None:
-    """各 static フレーミング区間の代表フレームをメイン領域でOCRし、画面テキスト文脈を作る。
+    """各フレーミング区間の代表フレームをOCRし、画面テキスト文脈を作る。
 
     STT が誤りやすい固有名（モデル名/論文名/ツール名）を、画面に映った文字で補正するための
     文脈。章検出LLM入力(chapter_input.tsv)に追記でき、概要欄/サムネ生成にも使える。
+
+    OCRは `screen_ocr.json` の**共有キャッシュ**（`privacy ng-mosaic` と同じ1回の推論）。
+    テキストは各区間の bbox（メイン領域）内に絞って拾う。
     """
-    from wwedit.chapter.ocr_context import build_screen_digest, format_digest
+    from wwedit.chapter.ocr_context import ScreenText, dedup_consecutive, format_digest
+    from wwedit.ocr.screen_scan import boxes_within, ensure_screen_ocr
 
     edl = load_edl(edl_path)
     if not any(r.kind == "static" for r in edl.framing):
         raise typer.BadParameter("static フレーミング区間が無い（先に framing scenes/assign）")
-    rprint("[dim]代表フレームをOCR中（メイン領域に切り出し）...[/]")
-    digest = build_screen_digest(edl)
+
+    def _progress(i: int, n: int) -> None:
+        if i % 25 == 0:
+            rprint(f"[dim]  OCR {i}/{n} フレーム[/]")
+
+    rprint("[dim]代表フレームをOCR中（キャッシュ優先）...[/]")
+    frames = ensure_screen_ocr(
+        edl, edl_path.parent / "screen_ocr.json", refresh=refresh, progress_fn=_progress
+    )
+
+    def _bbox_at(t: float):
+        for r in edl.framing:
+            if r.start <= t < r.end:
+                return r.bbox
+        return None
+
+    entries = []
+    for fr in frames:
+        text = " ".join(
+            b.text.strip() for b in boxes_within(fr.boxes, _bbox_at(fr.time_s)) if b.text.strip()
+        )
+        if len(text) >= 2:
+            entries.append(ScreenText(time_s=fr.time_s, text=text))
+    digest = dedup_consecutive(sorted(entries, key=lambda e: e.time_s))
     block = format_digest(digest)
     out_path = out or (edl_path.parent / "screen_text.txt")
     out_path.write_text(block + "\n", encoding="utf-8")

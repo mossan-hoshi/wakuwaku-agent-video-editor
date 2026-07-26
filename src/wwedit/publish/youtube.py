@@ -100,7 +100,13 @@ def _oauth_credentials():
     return Credentials(
         token=None, refresh_token=refresh, client_id=cid, client_secret=secret,
         token_uri="https://oauth2.googleapis.com/token",
-        scopes=["https://www.googleapis.com/auth/youtube.upload"],
+        # upload だけを並べると、readonly を持つ refresh token でも
+        # **upload 限定のアクセストークン**が発行され `videos.list` が 403 になる。
+        # 再認証(scripts/reauth_youtube.py)で付与した scope をそのまま並べる。
+        scopes=[
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube.readonly",
+        ],
     )
 
 

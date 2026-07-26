@@ -455,11 +455,18 @@ def crop_apply(
     static_only: bool = typer.Option(
         True, help="static区間のみ対象（loading/pendingは除外）"
     ),
+    default_trim: bool = typer.Option(
+        True, help="bbox が付かなかった区間へ既定トリム(上下左右1割)を入れる＝全画面を残さない"
+    ),
+    inset: float = typer.Option(0.1, help="既定トリムの片側インセット比（0.1＝上下左右1割）"),
 ) -> None:
     """[E] 学習済みモデルで各 framing 区間の代表フレームを推論し framing.bbox へ書き戻す。
 
     書き戻した bbox は `compose video --framed` / 編集ツールの crop 枠に反映される。
     既定 device=cpu で安全（数十秒）。区間が多く速度が要るときだけ `--device cuda`。
+
+    **既定で「全画面(no_crop)」を残さない**：モデルが bbox を付けられなかった区間には
+    上下左右1割を落とした既定トリムを入れる（`--no-default-trim` で従来の全画面のまま）。
     """
     from wwedit.framing.croptrain_ft import apply_model_to_edl
 
@@ -469,6 +476,39 @@ def crop_apply(
     rprint(f"[dim]crop 推論・書き戻し中（model={model.name}, device={device}）...[/]")
     n = apply_model_to_edl(edl_path, model, device=device, static_only=static_only)
     rprint(f"[green]crop 書き戻し完了[/]: {n}区間の framing.bbox を更新 → {edl_path}")
+    if default_trim:
+        _apply_default_trim(edl_path, inset)
+
+
+def _apply_default_trim(edl_path: Path, inset: float) -> None:
+    """bbox 未設定の framing 区間へ既定トリムを入れて保存する（共通処理）。"""
+    from wwedit.edl.schema import load_edl, save_edl
+    from wwedit.framing.default_trim import apply_default_trim, inset_bbox
+
+    edl = load_edl(edl_path)
+    n = apply_default_trim(edl, inset=inset)
+    if not n:
+        rprint("[dim]既定トリム: bbox 未設定の区間なし（全区間に crop 済）。[/]")
+        return
+    save_edl(edl, edl_path)
+    box = inset_bbox(edl.source.width, edl.source.height, inset)
+    rprint(
+        f"[green]既定トリム[/]: 全画面だった {n}区間へ上下左右{inset:.0%}トリム"
+        f" {box[2]}x{box[3]} を適用 → {edl_path}"
+    )
+
+
+@framing_app.command(name="default-trim")
+def default_trim_cmd(
+    edl_path: Path = typer.Argument(..., help="対象 EDL"),
+    inset: float = typer.Option(0.1, help="片側のインセット比（0.1＝上下左右1割）"),
+) -> None:
+    """bbox が無い（全画面扱いの）framing 区間へ、上下左右1割トリムの既定枠を入れる。
+
+    **出力に素の全画面を出さない**ための工程（ユーザー確定方針）。既に bbox がある区間
+    （モデル推論済み・人手修正済み）は触らない。`crop-apply` が既定で自動実行する。
+    """
+    _apply_default_trim(edl_path, inset)
 
 
 @framing_app.command()

@@ -92,6 +92,20 @@ def _pick_jingle(jingle_dir: Path, seed: int) -> Path | None:
     return random.Random(seed).choice(cands) if cands else None
 
 
+def _synth_voice(out_wav: Path, seed: int) -> tuple[Path | None, str]:
+    """章 seed でキャラ＋一言を選び合成する。失敗したら ``(None, "")``（音楽へフォールバック）。"""
+    from wwedit.publish.character import full_name
+    from wwedit.publish.eyecatch_voice import synth_eyecatch_voice
+
+    try:
+        wav, char, disp, _dur = synth_eyecatch_voice(out_wav, seed=seed)
+    except Exception as e:  # SBV2サーバ未起動など。アイキャッチ自体は出す。
+        print(f"  [warn] アイキャッチ音声の合成に失敗（音楽へ退避）: {e}")
+        return (None, "")
+    print(f"  アイキャッチ音声: {full_name(char)}「{disp}」")
+    return (wav, full_name(char))
+
+
 def insert_eyecatches(
     main_mp4: str | Path,
     edl: Edl,
@@ -99,6 +113,7 @@ def insert_eyecatches(
     *,
     ranges: list[TimeRange] | None = None,
     jingle_dir: str | Path | None = None,
+    voice: bool = True,
     duration: float = 2.0,
     seed_base: int = 0,
     out_w: int = 1920,
@@ -109,9 +124,13 @@ def insert_eyecatches(
 ) -> tuple[Path, list[str]]:
     """本編 mp4 の各章境界へアイキャッチを挿入した mp4 を書き出す。
 
-    章ごとに ``publish.eyecatch.generate_eyecatch``（seed=seed_base+i・``jingle_dir`` から
-    seed でランダム選曲）でクリップを作り、本編を境界で trim 分割して concat フィルタで再連結。
-    fps/音声フォーマットを揃えて全体を1回再エンコードする（クリップ間のドリフト無し）。
+    章ごとに ``publish.eyecatch.generate_eyecatch``（seed=seed_base+i）でクリップを作り、
+    本編を境界で trim 分割して concat フィルタで再連結。fps/音声フォーマットを揃えて全体を
+    1回再エンコードする（クリップ間のドリフト無し）。
+
+    **音は既定でのべつべ！キャラの一言ボイス**（``voice=True``・章ごとにキャラと台詞が変わり、
+    右上にロゴ＋キャラ名が出る）。SBV2サーバが無いなど合成に失敗したら ``jingle_dir`` の
+    音楽へフォールバックする（アイキャッチ自体は必ず出す）。
     返り値 ``(out_path, chapter_lines)``（chapter_lines=補正済み概要欄用）。
     """
     from wwedit.publish.eyecatch import generate_eyecatch
@@ -139,10 +158,16 @@ def insert_eyecatches(
     for n_ec, i in enumerate(ec_chapters):
         b = bounds[i]
         seed = seed_base + i
-        jingle = _pick_jingle(jdir, seed) if jdir and jdir.exists() else None
+        vwav, vname = (None, "")
+        if voice:
+            vwav, vname = _synth_voice(work / f"ec_{i:02d}.wav", seed)
+        jingle = None
+        if vwav is None and jdir and jdir.exists():
+            jingle = _pick_jingle(jdir, seed)
         ec = generate_eyecatch(
             b["title"], work / f"ec_{i:02d}.mp4",
             seed=seed, jingle=str(jingle) if jingle else None,
+            voice=str(vwav) if vwav else None, voice_name=vname,
             duration=duration, out_w=out_w, out_h=out_h, fps=fps,
         )
         cmd += ["-i", str(ec)]

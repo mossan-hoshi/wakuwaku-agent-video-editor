@@ -146,23 +146,28 @@ def lipsync(
     audio: Path = typer.Option(..., help="音声 wav"),
     out: Path = typer.Option(..., help="出力 mp4（720p/16:9）"),
     seconds: int = typer.Option(0, help="尺(秒)。0=音声尺を切り上げ。**高コスト$0.06/秒**"),
-    prompt: str = typer.Option(
-        "natural talking expression, gentle friendly smile", help="表情指示"),
+    char: str = typer.Option(
+        "", help="キャラID。表情を mascot.md 準拠にする（未指定は中立。笑顔を強制しない）"),
+    prompt: str = typer.Option("", help="表情指示（明示するとキャラ既定を上書き）"),
 ) -> None:
     """[G] DomoAI talking-avatar で開始フレーム＋音声→リップシンク動画（**決定的・外部API課金**）。
 
     seconds 既定=音声尺の切り上げ。出来の良し悪し（目元/口元）の判断は呼び出し側で目視QA。
+    表情は `--char` の設定（mascot.md）に従う＝**全キャラ一律の笑顔にしない**（キャラ崩れ防止）。
     """
     import math
     import subprocess
 
+    from wwedit.publish.character import expression_of
     from wwedit.publish.domoai import generate_talking_avatar
 
     if seconds <= 0:
         r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                             "-of", "default=nw=1:nk=1", str(audio)], capture_output=True, text=True)
         seconds = max(1, min(60, math.ceil(float(r.stdout.strip() or 1))))
-    rprint(f"[dim]DomoAI 生成中（seconds={seconds}・約${seconds * 0.06:.2f}）...[/]")
+    if not prompt:
+        prompt = f"natural talking expression, {expression_of(char)}"
+    rprint(f"[dim]DomoAI 生成中（seconds={seconds}・約${seconds * 0.06:.2f}・表情={prompt}）...[/]")
     try:
         p = generate_talking_avatar(image, audio, out, seconds=seconds,
                                     aspect_ratio="16:9", prompt=prompt)
