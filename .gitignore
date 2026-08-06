@@ -16,6 +16,16 @@ __pycache__/
 *.png
 *.jpg
 
+# [V] ちびキャラアセット（課金生成物・全収録で再利用。repo外バックアップ推奨）
+/assets/chibi/
+# 口パク補間に試したが不採用（docs/STATUS.md 14.7-7）。残っていても使わない
+# ※ .gitignore は行末コメントを解釈しないので、コメントは必ず行頭に置くこと
+/models/rife/
+*.webp
+
+# 収録ごとの使い捨て中間ファイル（リポジトリに含めない）
+/scratch_*.json
+
 # 秘匿情報
 .env
 secrets/

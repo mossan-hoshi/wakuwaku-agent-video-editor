@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from wwedit.common.media import ffmpeg_path
+from wwedit.common.media import ffmpeg_error, ffmpeg_path
 
 LOGO = Path(__file__).resolve().parents[3] / "assets" / "logo" / "nobetube_logo.png"
 _MEIRYO = r"C:\Windows\Fonts\meiryob.ttc"
@@ -412,6 +412,6 @@ def generate_eyecatch(
 
     proc = _run(cmd)
     if proc.returncode != 0:
-        tail = "\n".join((proc.stderr or "").splitlines()[-18:])
+        tail = ffmpeg_error(proc.stderr)
         raise RuntimeError(f"アイキャッチ生成失敗:\n{tail}")
     return out_path

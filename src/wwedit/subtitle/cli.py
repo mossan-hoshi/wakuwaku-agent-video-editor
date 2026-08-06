@@ -18,23 +18,30 @@ subtitle_app = typer.Typer(help="style字幕（メイリオ二重枠）", no_arg
 def color(
     edl_path: Path = typer.Argument(..., help="対象 EDL"),
     speaker: str = typer.Argument(..., help="話者名（例 mossan-hoshi / Taniguchi）"),
-    name: str = typer.Argument(..., help="色: red/purple/blue/green / auto(自動に戻す)"),
+    name: str = typer.Argument(
+        ..., help="色: red/purple/blue/green / キャラid(noa/suzu/...) / #RRGGBB / auto(自動に戻す)"
+    ),
 ) -> None:
     """話者ごとの本編字幕色を切り替える（EDL.subtitle_speaker_colors に保存・合成で反映）。
 
     自動では sakamoto/mossan-hoshi=寒色・taniguchi=暖色を割当てる。ここで個別に上書きできる。
+    キャラid はのべつべテーマ色（暗色は明度補正）になる（キャラ声差し替え時に voice-cast も書く）。
     """
-    from wwedit.subtitle.ass import MAIN_PALETTE
+    from wwedit.subtitle.ass import CHAR_THEME_HEX, MAIN_PALETTE, resolve_color_key
 
     edl = load_edl(edl_path)
     if name == "auto":
         edl.subtitle_speaker_colors.pop(speaker, None)
         msg = f"{speaker}=auto（寒色/暖色で自動割当）"
-    elif name in MAIN_PALETTE:
-        edl.subtitle_speaker_colors[speaker] = name
-        msg = f"{speaker}={name}（{MAIN_PALETTE[name]}）"
     else:
-        raise typer.BadParameter(f"色は {', '.join(MAIN_PALETTE)} / auto のいずれか")
+        resolved = resolve_color_key(name)
+        if resolved is None:
+            raise typer.BadParameter(
+                f"色は {', '.join(MAIN_PALETTE)} / {', '.join(CHAR_THEME_HEX)} / "
+                "#RRGGBB / auto のいずれか"
+            )
+        edl.subtitle_speaker_colors[speaker] = name
+        msg = f"{speaker}={name}（{resolved}）"
     save_edl(edl, edl_path)
     rprint(f"[green]話者字幕色[/]: {msg}")
 

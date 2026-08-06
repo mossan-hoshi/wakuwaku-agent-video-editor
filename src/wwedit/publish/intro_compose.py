@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from wwedit.common.media import ffmpeg_path
+from wwedit.common.media import ffmpeg_error, ffmpeg_path
 from wwedit.edl.schema import Subtitle
 from wwedit.subtitle.ass import build_ass
 
@@ -151,8 +151,13 @@ def compose_intro(
     logo_path: str | Path = LOGO,
     out_w: int = 1920,
     out_h: int = 1080,
+    subtitle_color: str | None = None,
 ) -> Path:
-    """リップシンク動画＋台本＋ロゴ/名＋ジングル → FullHD 完成イントロ mp4。"""
+    """リップシンク動画＋台本＋ロゴ/名＋ジングル → FullHD 完成イントロ mp4。
+
+    ``subtitle_color``: 二重枠字幕の色（ASS &HAABBGGRR）。**喋るキャラの配色**を渡す
+    （``subtitle.ass.intro_color_for(char)``）。未指定は既定のピンク。
+    """
     # ffmpeg は cwd=work（ass相対参照のため）で動くので入力は絶対パス化する。
     intro_video = Path(intro_video).resolve()
     jingle = Path(jingle).resolve() if jingle else None
@@ -161,10 +166,14 @@ def compose_intro(
     dur = _duration(intro_video)
     work = Path(tempfile.mkdtemp())
 
-    # ピンク二重枠字幕(intro)＝**2行ずつのキューに分割**して時間配分（同時表示は2行）。
+    # 二重枠字幕(intro)＝**2行ずつのキューに分割**して時間配分（同時表示は2行）。色はキャラ基準。
     subs = script_to_subtitles(script, dur or 9.0)
     ass = work / "intro.ass"
-    ass.write_text(build_ass(subs, color_map={}, play_w=out_w, play_h=out_h), encoding="utf-8")
+    ass.write_text(
+        build_ass(subs, color_map={}, intro_color=subtitle_color,
+                  play_w=out_w, play_h=out_h),
+        encoding="utf-8",
+    )
     badge = _badge(name, Path(logo_path), work / "badge.png")
 
     cmd = [ffmpeg_path(), "-y", "-i", str(intro_video)]
@@ -193,6 +202,6 @@ def compose_intro(
             "-c:a", "aac", "-pix_fmt", "yuv420p", str(out_path)]
     proc = subprocess.run(cmd, cwd=str(work), capture_output=True, text=True)
     if proc.returncode != 0:
-        tail = "\n".join((proc.stderr or "").splitlines()[-15:])
+        tail = ffmpeg_error(proc.stderr)
         raise RuntimeError(f"イントロ合成失敗:\n{tail}")
     return out_path

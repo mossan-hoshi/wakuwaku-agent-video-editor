@@ -243,7 +243,7 @@ def write_fcpxml(edl: Edl, out_path: str | Path) -> None:
     title_ref: str | None = None
     color_map: dict[str, str] = {}
     if edl.subtitles:
-        from wwedit.subtitle.ass import MAIN_PALETTE, assign_speaker_colors
+        from wwedit.subtitle.ass import assign_speaker_colors, resolve_color_key
 
         title_ref = f"r{3 + len(speakers)}"
         _title_uid = (
@@ -254,8 +254,9 @@ def write_fcpxml(edl: Edl, out_path: str | Path) -> None:
         spk = [s.speaker for s in edl.subtitles if s.speaker]
         color_map = assign_speaker_colors(spk, edl.recording_dir or "main")
         for sp, key in (edl.subtitle_speaker_colors or {}).items():
-            if key in MAIN_PALETTE:
-                color_map[sp] = MAIN_PALETTE[key]
+            c = resolve_color_key(key)
+            if c:
+                color_map[sp] = c
 
     # BGM 音声資源（重複pathは1資源・hasVideo=0）。EDL.bgm が空なら追加しない。
     bgm_total = sum(r.duration for r in edl.kept_ranges())

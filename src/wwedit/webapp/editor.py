@@ -188,7 +188,7 @@ def create_editor_app(edl_path: str | Path, preview_path: str | Path | None = No
     from fastapi.responses import FileResponse, HTMLResponse
 
     from wwedit.edl.schema import load_edl, save_edl
-    from wwedit.subtitle.ass import MAIN_PALETTE, assign_speaker_colors
+    from wwedit.subtitle.ass import MAIN_PALETTE, assign_speaker_colors, resolve_color_key
 
     edl_path = Path(edl_path)
     preview_path = Path(preview_path) if preview_path else None
@@ -205,8 +205,9 @@ def create_editor_app(edl_path: str | Path, preview_path: str | Path | None = No
         spk = [s.speaker for s in edl.subtitles if s.speaker]
         cmap = assign_speaker_colors(spk, edl.recording_dir or "main")
         for sp, key in (edl.subtitle_speaker_colors or {}).items():
-            if key in MAIN_PALETTE:
-                cmap[sp] = MAIN_PALETTE[key]
+            c = resolve_color_key(key)
+            if c:
+                cmap[sp] = c
         return cmap
 
     def _sub_css(s, cmap) -> str:
@@ -801,7 +802,7 @@ def create_editor_app(edl_path: str | Path, preview_path: str | Path | None = No
 
     @app.post("/api/speaker-color")
     def set_speaker_color(payload: SpeakerColor) -> dict:
-        if payload.color not in (*MAIN_PALETTE.keys(), "auto"):
+        if payload.color != "auto" and resolve_color_key(payload.color) is None:
             raise HTTPException(400, f"未知の色: {payload.color}")
         edl = load_edl(edl_path)
         colors = dict(edl.subtitle_speaker_colors or {})

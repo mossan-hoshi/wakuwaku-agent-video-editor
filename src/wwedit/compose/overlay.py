@@ -60,7 +60,7 @@ def resolve_color(color: str) -> str:
 
 
 def overlays_to_output(
-    overlays: list[Overlay], ranges: list[TimeRange]
+    overlays: list[Overlay], ranges: list[TimeRange], freezes=()
 ) -> list[Overlay]:
     """オーバーレイ(ソース時刻)を出力タイムライン時刻へ変換する。
 
@@ -68,7 +68,7 @@ def overlays_to_output(
     """
     out: list[Overlay] = []
     for o in sorted(overlays, key=lambda v: (v.start, v.id)):
-        os_, oe = _src_to_out(ranges, o.start), _src_to_out(ranges, o.end)
+        os_, oe = _src_to_out(ranges, o.start, freezes), _src_to_out(ranges, o.end, freezes)
         if oe - os_ <= 1e-3:
             continue
         out.append(o.model_copy(update={"start": os_, "end": oe}))
@@ -259,7 +259,7 @@ def build_mosaic_chains(
 
 def edl_overlays_for_output(edl: Edl, ranges: list[TimeRange]) -> list[Overlay]:
     """EDL のオーバーレイを出力タイムラインへ変換して返す（合成側の入口）。"""
-    return overlays_to_output(edl.overlays or [], ranges)
+    return overlays_to_output(edl.overlays or [], ranges, tuple(edl.freezes or ()))
 
 
 # ── ソース基準の座標 → クロップ後の出力座標への写像 ──────────────────────────
@@ -294,12 +294,17 @@ def output_crop_segments(
 ) -> list[tuple[float, float, tuple[int, int, int, int] | None]]:
     """出力タイムライン上の ``(start, end, bbox)``。隣接する同一 bbox は1つに畳む。
 
-    bbox の決め方は framed concat と同一（各 keep 区間の**中点**のフレーミング bbox）。
+    bbox の決め方は framed concat と**同一の区間分割**を使う（:func:`framed_pieces`＝
+    フリーズ位置とフレーミング境界で割り、各小片の中点の bbox）。ここが framed concat と
+    ずれると、モザイクや重ねが crop と違う倍率・位置で置かれる。
     """
+    from wwedit.compose.ffmpeg_compose import framed_pieces
+
     segs: list[tuple[float, float, tuple[int, int, int, int] | None]] = []
     t = 0.0
-    for r in ranges:
-        d = max(0.0, r.end - r.start)
+    # フリーズは直前フレームの静止＝同じ crop が続くので、piece 尺に extra を足すだけでよい
+    for r, extra in framed_pieces(edl, ranges, tuple(edl.freezes or ())):
+        d = max(0.0, r.end - r.start) + extra
         if d <= 0:
             continue
         bb = bbox_at(edl, (r.start + r.end) / 2)

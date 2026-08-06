@@ -2,6 +2,8 @@
 
 @mossan_hoshi（わく枠べんきょ会）の実投稿を分析した型に合わせる（[[youtube-description-format]]）:
 
+    <冒頭ブロック: 任意。この動画をどう作ったか等・空なら丸ごと出さない>
+    （空行）
     Agenda「<その回のテーマ>」
     （空行）
     <関連リンク: ラベル→URL・任意・ブロック間は空行>
@@ -49,6 +51,7 @@ def build_description(
     edl: Edl,
     *,
     agenda: str,
+    intro: str = "",
     links: list[tuple[str, str]] | None = None,
     hashtags: str | list[str] | None = None,
     chapter_lines: list[str] | None = None,
@@ -56,13 +59,18 @@ def build_description(
 ) -> str:
     """概要欄を**チャンネル実フォーマット**で組み立てる（決定的・テスト可能）。
 
+    - intro: **Agenda より前**に置く冒頭ブロック（任意）。この動画をどう作ったか等、
+      その回だけの前置きに使う。空なら行も空行も出さない＝通常回は従来と完全に同一。
     - agenda: その回のテーマ。``Agenda「…」`` に入れる（必須）。
     - links: ``[(ラベル, URL), …]``。各ブロックは ``ラベル\\nURL``、ブロック間は空行。
     - hashtags: ``"#a #b"`` の文字列、または ``["a","b"]``（``#`` は自動付与）。
     - chapter_lines: ``"MM:SS ラベル"`` の章行（既定 ``youtube_chapter_lines``）。先頭に
       ``00:00 - start`` を必ず置き、各章は ``MM:SS - ラベル`` に整形（00:00章は start に集約）。
     """
-    blocks: list[str] = [f"Agenda「{agenda.strip()}」"]
+    blocks: list[str] = []
+    if intro.strip():
+        blocks.append(intro.strip())
+    blocks.append(f"Agenda「{agenda.strip()}」")
 
     if links:
         blocks.append("\n\n".join(f"{label}\n{url}" for label, url in links))

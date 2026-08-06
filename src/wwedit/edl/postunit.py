@@ -9,15 +9,23 @@ from __future__ import annotations
 from wwedit.edl.schema import Edl, TimeRange
 
 
-def _src_to_out(ranges: list[TimeRange], t: float) -> float:
-    """ソース秒 t を、指定 ranges を連結した出力秒へ（カット内なら次区間先頭へスナップ）。"""
+def _src_to_out(ranges: list[TimeRange], t: float, freezes=()) -> float:
+    """ソース秒 t を、指定 ranges を連結した出力秒へ（カット内なら次区間先頭へスナップ）。
+
+    ``freezes``: [V] 方式Bのフリーズフレーム。t より前の区間内フリーズ分だけ後ろへずれる
+    （概要欄の章時刻がレンダ結果とずれないように）。
+    """
     acc = 0.0
     for r in ranges:
         if t < r.start:
-            return acc
+            break
         if t <= r.end:
-            return acc + (t - r.start)
+            acc += t - r.start
+            break
         acc += r.end - r.start
+    for f in freezes or ():
+        if f.at < t and any(r.start < f.at < r.end for r in ranges):
+            acc += f.extra
     return acc
 
 
@@ -49,8 +57,9 @@ def post_unit_chapter_lines(edl: Edl, idx: int) -> list[str]:
     chs = [c for c in sorted(edl.chapters, key=lambda c: c.start_at)
            if lo - 1e-6 <= c.start_at < hi]
     lines: list[str] = []
+    frz = tuple(edl.freezes or ())
     for i, c in enumerate(chs):
-        ot = 0.0 if i == 0 else _src_to_out(ranges, c.start_at)
+        ot = 0.0 if i == 0 else _src_to_out(ranges, c.start_at, frz)
         h, rem = divmod(int(ot), 3600)
         m, s = divmod(rem, 60)
         ts = f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
