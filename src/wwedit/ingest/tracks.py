@@ -36,15 +36,26 @@ class RecordingTracks(BaseModel):
     speaker_tracks: list[SpeakerTrack] = Field(default_factory=list)
 
 
-def _parse_speaker(stem: str, video_id: str) -> str:
-    """``audio<speaker><idx><id>`` -> ``<speaker>``。"""
+def _parse_speaker_index(stem: str, video_id: str) -> tuple[str, int]:
+    """``audio<speaker><idx><id>`` -> ``(<speaker>, <idx>)``。
+
+    ``idx`` は Zoom の入室順の連番。**同じ人が2枠で入ると連番だけが違う2本**になる
+    （マイク＝発話 ／ もう1枠＝PC音声）。どちらが先かは連番で決まるので、
+    ファイル名の並び（OSで大文字小文字の扱いが違う）ではなくこの値で判定する。
+    """
     core = stem
     if core.lower().startswith("audio"):
         core = core[len("audio") :]
     if video_id and core.endswith(video_id):
         core = core[: -len(video_id)]
-    # 末尾のトラック連番（1桁）を除去
-    return core.rstrip("0123456789") or core
+    name = core.rstrip("0123456789") or core
+    digits = core[len(name) :]
+    return name, int(digits) if digits.isdigit() else 0
+
+
+def _parse_speaker(stem: str, video_id: str) -> str:
+    """``audio<speaker><idx><id>`` -> ``<speaker>``。"""
+    return _parse_speaker_index(stem, video_id)[0]
 
 
 def detect_tracks(folder: str | Path) -> RecordingTracks:
@@ -66,12 +77,27 @@ def detect_tracks(folder: str | Path) -> RecordingTracks:
     combined_audio = str(combined[0]) if combined else None
 
     # 話者別音声
+    #
+    # **1話者につき最大2本**＝マイク（発話）と PC 音声（画面共有で流した音楽など）。
+    # 参加者は音を流すために別枠でもう1つ入るので、同じ表示名で連番違いの2本になる
+    # （例: Taniguchi2=発話 / Taniguchi3=PC音声）。**両者のPCそれぞれから入り得る**ので
+    # 話者ごとに独立して判定する。連番の小さい方＝先に入った枠＝発話。
+    # PC音声は**合成には混ぜるが文字起こしはしない**（音楽をSTTにかけると幻聴の語が入り、
+    # かつ本当の発話トラックを取り違えて丸ごと落とす。2026-08-03 で実際に踏んだ）。
     speaker_tracks: list[SpeakerTrack] = []
     rec_dir = folder / "Audio Record"
     if rec_dir.is_dir():
-        for f in sorted(rec_dir.glob("audio*.m4a")):
-            speaker = _parse_speaker(f.stem, video_id)
-            is_desktop = any(h in speaker.lower() for h in _DESKTOP_HINTS)
+        files = sorted(rec_dir.glob("audio*.m4a"))
+        parsed = [(f, *_parse_speaker_index(f.stem, video_id)) for f in files]
+        voice_idx: dict[str, int] = {}
+        for _f, speaker, idx in parsed:
+            if speaker not in voice_idx or idx < voice_idx[speaker]:
+                voice_idx[speaker] = idx
+        for f, speaker, idx in parsed:
+            is_desktop = (
+                any(h in speaker.lower() for h in _DESKTOP_HINTS)
+                or idx != voice_idx[speaker]
+            )
             speaker_tracks.append(
                 SpeakerTrack(speaker=speaker, path=str(f), is_desktop_audio=is_desktop)
             )

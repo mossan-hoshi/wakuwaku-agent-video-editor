@@ -28,6 +28,7 @@ def version() -> None:
 # ── 工程サブコマンドの登録（実装済みのものから順次追加）─────────────
 # 注: [C] 無音検出は STT 先行・動的閾値方式に再設計するため、STT 実装後に登録する。
 from wwedit.chapter.cli import chapter_app  # noqa: E402
+from wwedit.chibi.cli import chibi_app  # noqa: E402
 from wwedit.compose.cli import compose_app  # noqa: E402
 from wwedit.cut.cli import cut_app  # noqa: E402
 from wwedit.drp.cli import drp_app  # noqa: E402
@@ -46,6 +47,7 @@ app.add_typer(framing_app, name="framing")
 app.add_typer(drp_app, name="drp")
 app.add_typer(compose_app, name="compose")
 app.add_typer(chapter_app, name="chapter")
+app.add_typer(chibi_app, name="chibi")
 app.add_typer(subtitle_app, name="subtitle")
 app.add_typer(privacy_app, name="privacy")
 app.add_typer(publish_app, name="publish")

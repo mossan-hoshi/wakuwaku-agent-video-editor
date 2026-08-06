@@ -253,3 +253,54 @@ def test_build_video_resource_tags_override():
     # 明示指定が優先／空リストで「タグ無し」を明示できる
     assert build_video_resource("t", _DESC, tags=["手動"])["snippet"]["tags"] == ["手動"]
     assert build_video_resource("t", _DESC, tags=[])["snippet"]["tags"] == []
+
+
+# ---- 冒頭ブロック（--intro-file）: その回だけの前置きを Agenda の前に置く ----
+# 2026-08-06「概要欄冒頭に各動画をどう使ったか（簡潔に）」というユーザー指示で追加。
+
+
+def test_intro_goes_above_the_agenda():
+    intro = "この動画は全部Claude Codeで作りました。"
+    text = build_description(_edl(), agenda="テーマ", intro=intro)
+    assert text.startswith(f"{intro}\n\nAgenda「テーマ」")
+
+
+def test_no_intro_keeps_the_usual_format():
+    """通常回は従来と完全に同一（冒頭の空行も増えない）。"""
+    edl = _edl()
+    plain = build_description(edl, agenda="テーマ")
+    assert plain == build_description(edl, agenda="テーマ", intro="")
+    assert plain.startswith("Agenda「")
+
+
+def test_whitespace_only_intro_is_dropped():
+    edl = _edl()
+    assert build_description(edl, agenda="テーマ", intro="   \n\n ").startswith("Agenda「")
+
+
+def test_a_multi_line_intro_keeps_its_line_breaks():
+    intro = "1行目\n2行目\n\n段落2"
+    text = build_description(_edl(), agenda="テーマ", intro=intro)
+    assert text.startswith(intro + "\n\nAgenda「")
+
+
+def test_a_plain_intro_does_not_disturb_the_chapters():
+    from wwedit.publish.description import chapter_problems
+
+    text = build_description(
+        _edl(), agenda="テーマ",
+        intro="この動画はClaude Codeで自動編集しました。\n通常版: https://youtu.be/xxxx")
+    assert "00:00 - start" in text
+    assert not chapter_problems(text)
+
+
+def test_a_timestamp_in_the_intro_is_caught_by_the_checker():
+    """⚠️ 冒頭ブロックに時刻行を書くと YouTube が章を誤読する。検査が弾くこと。
+
+    1つでも章の条件を破ると章リストが**丸ごと**無効化されるので、
+    「気づかず投稿してしまう」のが一番まずい（#101 で全滅した）。
+    """
+    from wwedit.publish.description import chapter_problems
+
+    text = build_description(_edl(), agenda="テーマ", intro="前置き\n00:00 章のつもりではない行")
+    assert chapter_problems(text)

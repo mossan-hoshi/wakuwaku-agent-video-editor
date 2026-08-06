@@ -13,12 +13,12 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from wwedit.compose.ffmpeg_compose import _src_to_out
+from wwedit.compose.ffmpeg_compose import _src_to_out, out_total
 from wwedit.edl.schema import Edl, TimeRange
 
 __all__ = [
     "render_ribbon_png", "chapter_ribbon_intervals", "format_rec_date",
-    "resolve_speaker_schemes", "RIBBON_SCHEMES",
+    "resolve_speaker_schemes", "scheme_from_ass", "RIBBON_SCHEMES",
 ]
 
 # ---- 見た目パラメータ（1920x1080基準・控えめサイズ）----
@@ -111,23 +111,55 @@ def render_ribbon_png(
     return out_path
 
 
+def scheme_from_ass(ass_color: str) -> tuple:
+    """ASS色から (暗セル, 明セル上, 明セル下) を自動生成する。
+
+    4色パレット外（キャラテーマ色など）のリボン配色フォールバック。
+    HLS の明度だけ変えて同系統3色を作る（暗=L0.13 / 上=L0.42 / 下=L0.28 目安）。
+    """
+    import colorsys
+
+    from wwedit.subtitle.ass import ass_to_rgb
+
+    r, g, b = (v / 255 for v in ass_to_rgb(ass_color))
+    h, _l, s = colorsys.rgb_to_hls(r, g, b)
+
+    def _at(light: float) -> tuple:
+        rr, gg, bb = colorsys.hls_to_rgb(h, light, s)
+        return (int(round(rr * 255)), int(round(gg * 255)), int(round(bb * 255)))
+
+    return (_at(0.13), _at(0.42), _at(0.28))
+
+
 def resolve_speaker_schemes(edl: Edl) -> dict[str, tuple]:
     """話者→リボン配色。字幕と同じ色キー（assign_speaker_colors＋EDL上書き）から導く。
 
     これで各話者のリボン色が**字幕の話者色と同系統**に揃う（mossan-hoshi=blue=現行 等）。
+    上書きキーはパレットキーのほかキャラid/#RRGGBB も可（キャラ声差し替え時）。4色パレットに
+    逆引きできない色は ``scheme_from_ass`` で同系統スキームを自動生成する。
     """
-    from wwedit.subtitle.ass import MAIN_PALETTE, assign_speaker_colors
+    from wwedit.subtitle.ass import MAIN_PALETTE, assign_speaker_colors, resolve_color_key
 
     speakers = sorted({c.speaker for c in edl.chapters if c.speaker})
     if not speakers:
         return {}
     cmap = assign_speaker_colors(speakers, edl.recording_dir or "main")
     for sp, key in (edl.subtitle_speaker_colors or {}).items():
-        if key in MAIN_PALETTE:
-            cmap[sp] = MAIN_PALETTE[key]
+        c = resolve_color_key(key)
+        if c:
+            cmap[sp] = c
     rev = {v: k for k, v in MAIN_PALETTE.items()}
-    return {sp: RIBBON_SCHEMES.get(rev.get(cmap.get(sp, ""), "blue"), _DEFAULT_SCHEME)
-            for sp in speakers}
+    out: dict[str, tuple] = {}
+    for sp in speakers:
+        color = cmap.get(sp, "")
+        pal_key = rev.get(color)
+        if pal_key:
+            out[sp] = RIBBON_SCHEMES.get(pal_key, _DEFAULT_SCHEME)
+        elif color:
+            out[sp] = scheme_from_ass(color)
+        else:
+            out[sp] = _DEFAULT_SCHEME
+    return out
 
 
 def chapter_ribbon_intervals(
@@ -142,13 +174,14 @@ def chapter_ribbon_intervals(
     speaker が空の章は直前の章の speaker を引き継ぐ（色分けの連続性のため）。
     """
     rgs = ranges if ranges is not None else edl.kept_ranges()
-    total = sum(r.duration for r in rgs)
+    frz = tuple(edl.freezes or ())
+    total = out_total(rgs, frz)
     chs = sorted(edl.chapters, key=lambda c: c.start_at)
     # 各章の出力開始秒（0..total にクランプ）＋ speaker 前方補完
     pts: list[dict] = []
     last_sp = ""
     for c in chs:
-        ot = min(max(_src_to_out(rgs, c.start_at), 0.0), total)
+        ot = min(max(_src_to_out(rgs, c.start_at, frz), 0.0), total)
         sp = c.speaker or last_sp
         last_sp = sp
         pts.append({"out_start": ot, "title": c.chapter_title or f"チャプター{len(pts) + 1}",

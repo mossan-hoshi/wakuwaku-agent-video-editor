@@ -62,6 +62,12 @@ class SpeakerTrack(BaseModel):
     is_desktop_audio: bool = Field(
         False, description="デスクトップ音声録音らしきトラック（文字起こし対象外）"
     )
+    voice_path: str | None = Field(
+        None,
+        description=(
+            "キャラ声差し替え後の wav。None=元の path を使う（非破壊・voice-revert で戻せる）"
+        ),
+    )
 
 
 class SourceMedia(BaseModel):
@@ -79,6 +85,49 @@ class Word(BaseModel):
     end: float
 
 
+#: 句読点のみの word。Whisper は無音をこれらのトークンに吸わせる（「。」が3.7秒など）
+PUNCT_CHARS = frozenset("、。，．,.!?！？…‥・「」『』（）()：:；;　 \t\n")
+#: 1文字あたりの発話上限秒。word の end は次の word の start と一致していて隙間が無いので、
+#: 文字数から妥当な長さを見積もり、超過分は無音として扱う。
+#: 口パク用の既定（見た目のズレが問題になるので短め）。
+MAX_SEC_PER_CHAR = 0.22
+#: 音声変換用。**小さい声・ゆっくりの発話を切らない**ことを優先して大きく取る。
+#: 余分に無音が入っても Seed-VC は無音を無音のまま返す（実測: 元無音窓の変換後は中央 -70dB台）
+#: ので実害はGPU時間だけ。逆に切りすぎると発話そのものが消えるため、こちらに倒す。
+VOICE_SEC_PER_CHAR = 1.0
+MIN_WORD_S = 0.10
+
+
+def voiced_word_spans(
+    words: list[Word], *, max_sec_per_char: float = MAX_SEC_PER_CHAR,
+) -> list[tuple[float, float]]:
+    """word 列から**実際に声が出ている区間**（素材秒）だけを取り出す。
+
+    Whisper の word タイミングは隙間ゼロで連続しており、間（無音）は句読点トークンや
+    直前の語の end に吸われている（実データで「ー」1文字が18秒など）。utterance の
+    start/end は相槌をまたぐ数十秒の塊なので、そのまま使うと大半が無音になる
+    （口パク・声変換の両方で問題になる）。
+    (1) 句読点のみの word を捨て (2) 文字数から見積もった上限で各 word を打ち切る。
+
+    音量では判定しない。小さい声でも Whisper が文字起こししていれば残る。
+    ``max_sec_per_char`` は用途で変える（口パク=短め / 音声変換=長め）。
+    """
+    out: list[tuple[float, float]] = []
+    for w in words:
+        text = (getattr(w, "text", "") or "").strip()
+        if not text or all(ch in PUNCT_CHARS for ch in text):
+            continue
+        cap = max(MIN_WORD_S, len(text) * max_sec_per_char)
+        end = min(w.end, w.start + cap)
+        if end > w.start:
+            out.append((w.start, end))
+    return out
+
+
+# ちびキャラの感情（chibi-emotion-assigner スキルが発話単位で付与）
+ChibiEmotion = Literal["normal", "smile", "surprised", "troubled", "angry", "thinking"]
+
+
 class Utterance(BaseModel):
     """話者統合トランスクリプトの1発話。"""
 
@@ -87,6 +136,9 @@ class Utterance(BaseModel):
     start: float
     end: float
     words: list[Word] = Field(default_factory=list)
+    emotion: ChibiEmotion | None = Field(
+        None, description="ちびキャラの感情。None=normal（差分のみ付与・次の割当まで持続）"
+    )
 
 
 class Segment(BaseModel):
@@ -217,6 +269,73 @@ class Overlay(BaseModel):
         return max(0.0, self.end - self.start)
 
 
+class Freeze(BaseModel):
+    """方式B（TTS読み上げ）で合成音声が元尺を超えた時のフリーズフレーム。
+
+    レンダ時に ``at`` の位置で映像を静止して ``extra`` 秒だけ伸ばす。
+    カット境界・framing・章 start_at は動かさない（加算情報のみ＝G2手修正ルール適合）。
+    """
+
+    at: float = Field(..., description="ソース秒（keep区間内・発話end直前に置く）")
+    extra: float = Field(..., description="伸ばす秒数")
+    note: str = ""
+
+
+class EmotionCue(BaseModel):
+    """[E] ちびキャラの表情を動かす**瞬間**（ソース秒）。
+
+    以前は ``Utterance.emotion``（＝発話まるごとに1つ）だったが、utterance は相槌をまたぐ
+    数十秒の塊なので「塊の頭で1回」しか表情を動かせず、**実際に驚いた瞬間に驚けない**
+    という指摘を受けた（明らかに驚いている所が normal のまま／「なるほど」に surprised）。
+    ここでは有声区間ごとの**時刻付きキュー**にして、鳴った瞬間に短く出す。
+    """
+
+    at: float = Field(..., description="ソース秒（この時刻から EMOTION_HOLD_S 秒だけ出す）")
+    speaker: str
+    emotion: ChibiEmotion
+    source: str = Field("", description="audio / text / both（どちらの根拠で付けたか）")
+    score: float = Field(0.0, description="音声判定のスコア（テキスト由来は0）")
+
+
+class ChibiConfig(BaseModel):
+    """ゆっくり風ちびキャラ表示の設定。"""
+
+    enabled: bool = False
+    sides: dict[str, str] = Field(
+        default_factory=dict,
+        description='{"left": 話者, "right": 話者}。空=話者名ソート順で左→右',
+    )
+    height_px: int = Field(320, description="ちびキャラの表示高さ(px・1080p基準)")
+    margin_px: tuple[int, int] = Field((24, 24), description="画面端からの余白 (x, y)")
+    flip_sides: list[str] = Field(
+        default_factory=lambda: ["left"],
+        description="左右反転する側。2体を対面させるため既定で left を反転する",
+    )
+
+
+class InfographicConfig(BaseModel):
+    """[I] 本編冒頭に出す**要約インフォグラフィック**（横長1枚）の表示設定。
+
+    イントロは別ファイルとして前に連結されるので、``start_s``/``duration_s`` は
+    **本編の出力タイムライン**の秒（0.0 = 本編の1フレーム目）で持つ。
+    サイズは「上部UI（チャプターリボン）・ちびキャラ・字幕に**重ならない**安全枠」に
+    contain 収めする（``compose.infographic_overlay.safe_box``）。
+    """
+
+    enabled: bool = True
+    path: str = Field("", description="生成済み横長PNGの絶対パス。空=表示しない")
+    start_s: float = Field(0.0, description="本編出力タイムライン上の表示開始秒")
+    duration_s: float = Field(10.0, description="表示秒数")
+    fade_s: float = Field(0.4, description="表示前後のフェード秒（0=カットイン）")
+    top_reserve_px: int = Field(
+        78, description="上部に空ける高さ(px・1080p基準)。チャプターリボン54px＋余白",
+    )
+    bottom_reserve_px: int = Field(
+        352, description="下部に空ける高さ(px)。ちびキャラ(320+24)と字幕の大きい方＋余白",
+    )
+    side_margin_px: int = Field(48, description="左右に空ける幅(px)")
+
+
 class PostUnit(BaseModel):
     """投稿単位（1収録から1〜2本）。各単位が1本のYouTube動画になる。"""
 
@@ -250,7 +369,28 @@ class Edl(BaseModel):
     )
     post_units: list[PostUnit] = Field(default_factory=list)
 
-    meta: dict = Field(default_factory=dict, description="任意のメタ情報")
+    character_cast: dict[str, str] = Field(
+        default_factory=dict,
+        description="話者→のべつべキャラid（noa/yume/...）。音声変換・字幕色・ちびキャラ表示の"
+        "共有SoT。publish voice-cast が書き込む。",
+    )
+    freezes: list[Freeze] = Field(
+        default_factory=list,
+        description="方式B（TTS読み上げ）のフリーズフレーム。空=タイムライン無変更",
+    )
+    emotion_cues: list[EmotionCue] = Field(
+        default_factory=list,
+        description="[E] ちびキャラの表情キュー（ソース秒）。空なら Utterance.emotion に落ちる",
+    )
+    chibi: ChibiConfig | None = Field(None, description="ちびキャラ表示設定。None=無効")
+    infographic: InfographicConfig | None = Field(
+        None, description="[I] 本編冒頭の要約インフォグラフィック表示設定。None=無効",
+    )
+
+    meta: dict = Field(
+        default_factory=dict,
+        description='任意のメタ情報。規約キー: "voice"={method, confirmed_at, prev_colors}',
+    )
 
     def kept_ranges(self) -> list[TimeRange]:
         """invalid でない区間（実際に残す区間）を返す。"""

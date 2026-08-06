@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 
-__all__ = ["MediaInfo", "probe", "ffprobe_path", "ffmpeg_path"]
+__all__ = ["MediaInfo", "probe", "ffprobe_path", "ffmpeg_path", "ffmpeg_error"]
 
 
 @dataclass
@@ -87,3 +87,25 @@ def probe(path: str | Path) -> MediaInfo:
             info.audio_channels = int(st.get("channels", 0))
             info.audio_rate = int(st.get("sample_rate", 0) or 0)
     return info
+
+
+#: ffmpeg が本当の失敗理由を書く行の目印。x264/aac の終了統計に流されないよう拾う。
+_ERROR_MARKERS = (
+    "error", "invalid", "no such file", "not found", "failed", "unable to",
+    "cannot ", "does not", "could not", "conversion failed", "impossible",
+)
+
+
+def ffmpeg_error(stderr: str | bytes | None, *, tail: int = 12) -> str:
+    """ffmpeg の stderr から**失敗理由らしい行**＋末尾を抜き出す。
+
+    単純な末尾N行だと、libx264 / aac が終了時に吐く統計（`consecutive B-frames:` 等）で
+    肝心のエラー行が押し流されて何も分からない（実際に910秒の合成が落ちた時に踏んだ）。
+    """
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    lines = (stderr or "").splitlines()
+    hits = [ln for ln in lines if any(m in ln.lower() for m in _ERROR_MARKERS)]
+    keep = hits[-tail:] if hits else []
+    rest = [ln for ln in lines[-tail:] if ln not in keep]
+    return "\n".join(keep + (["--- 末尾 ---", *rest] if keep and rest else rest))

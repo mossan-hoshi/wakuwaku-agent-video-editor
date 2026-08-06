@@ -64,6 +64,14 @@ youtube = [
     "google-api-python-client>=2.0",
     "google-auth-oauthlib>=1.0",
 ]
+# [V] ちびキャラの背景抜き。isnet-anime を onnxruntime CPU で回す（VRAM を食わない・
+# torch 非依存＝ocr extra と同じ理由で Windows でも安全）。
+chibi = [
+    "rembg>=2.0.59",
+    "onnxruntime>=1.17",
+    "numpy>=1.26",
+    "pillow>=10.0",
+]
 
 [project.scripts]
 wwedit = "wwedit.cli:app"

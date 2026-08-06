@@ -96,3 +96,74 @@ def test_pick_main_color_deterministic_from_palette():
     c = pick_main_color("2026-06-04")
     assert c in MAIN_PALETTE.values()  # 4色パレットから
     assert pick_main_color("2026-06-04") == c  # 同じ収録は同じ色
+
+
+# ---- キャラテーマ色（キャラ声差し替え）----
+
+def test_hex_to_ass_bgr_order():
+    from wwedit.subtitle.ass import hex_to_ass
+
+    assert hex_to_ass("#3FA9B5") == "&H00B5A93F"  # ASSは BGR 順
+    assert hex_to_ass("EC4899") == "&H009948EC"   # #なしも可
+
+
+def test_ass_to_rgb_round_trip():
+    from wwedit.subtitle.ass import ass_to_rgb, hex_to_ass
+
+    assert ass_to_rgb(hex_to_ass("#E0701F")) == (0xE0, 0x70, 0x1F)
+
+
+def test_ensure_legible_lifts_dark_keeps_bright():
+    import colorsys
+
+    from wwedit.subtitle.ass import ensure_legible
+
+    # kasumi の暗赤(#6B0716)は明度が引き上がる
+    lifted = ensure_legible("#6B0716")
+    assert lifted != "#6B0716"
+    r, g, b = (int(lifted[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    _h, lightness, _s = colorsys.rgb_to_hls(r, g, b)
+    assert lightness >= 0.40
+    # noa の明るいティール(#3FA9B5)は不変
+    assert ensure_legible("#3FA9B5").upper() == "#3FA9B5"
+
+
+def test_resolve_color_key_all_forms():
+    from wwedit.subtitle.ass import (
+        CHAR_THEME_HEX,
+        MAIN_PALETTE,
+        char_subtitle_color,
+        resolve_color_key,
+    )
+
+    assert resolve_color_key("blue") == MAIN_PALETTE["blue"]        # パレットキー
+    assert resolve_color_key("noa") == char_subtitle_color("noa")   # キャラid
+    assert resolve_color_key("#123456") == "&H00563412"             # 生hex
+    assert resolve_color_key("unknown") is None                     # 未知
+    assert resolve_color_key("") is None
+    # 全キャラが解決できる
+    for char in CHAR_THEME_HEX:
+        assert resolve_color_key(char) is not None
+
+
+def test_build_ass_with_char_color_double_border():
+    from wwedit.edl.schema import Subtitle
+    from wwedit.subtitle.ass import WHITE_RING, char_subtitle_color
+
+    color = char_subtitle_color("suzu")
+    ass = build_ass(
+        [Subtitle(start=0.0, end=1.0, text="す", style="main", speaker="Taniguchi")],
+        color_map={"Taniguchi": color},
+    )
+    # キャラ色でも二重枠仕様（色文字+白1次枠+同色外枠）は維持される
+    l1 = next(ln for ln in ass.splitlines() if ln.startswith("Style: c") and "L1" in ln)
+    assert f"{color},{color},{WHITE_RING}" in l1
+
+
+def test_scheme_from_ass_same_hue_three_tones():
+    from wwedit.compose.chapter_ribbon import scheme_from_ass
+    from wwedit.subtitle.ass import char_subtitle_color
+
+    dark, top, bottom = scheme_from_ass(char_subtitle_color("noa"))
+    # 暗→明の3トーン（明度順: dark < bottom < top）
+    assert sum(dark) < sum(bottom) < sum(top)

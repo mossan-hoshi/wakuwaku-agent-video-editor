@@ -45,12 +45,21 @@ def subtitles_from_utterances(
     max_chars: int = 28,
     min_dur: float = 0.4,
 ) -> list[Subtitle]:
-    """各発話を字幕化（長文は分割し、発話区間内に時間を比例配分）。ソース時刻のまま返す。"""
+    """各発話を字幕化（長文は分割し、発話区間内に時間を比例配分）。ソース時刻のまま返す。
+
+    人名は ``.env`` の ``WWEDIT_SUBTITLE_NAME_MAP``（漢字→カタカナ等）で置換する。
+    字幕を作る経路はここ・`subtitle.summarize`・`publish.voice_tts` の3つあり、
+    **どれか1つでも忘れると漢字の実名が画面に出る**（方式Bで実際に出た）。
+    """
+    from wwedit.privacy.masking import apply_name_replacements, load_name_replacements
+
+    nmap = load_name_replacements()
     subs: list[Subtitle] = []
     for u in edl.utterances:
         if not u.text.strip() or u.end - u.start < min_dur:
             continue
-        parts = split_text(u.text, max_chars=max_chars)
+        parts = split_text(apply_name_replacements(u.text, nmap) if nmap else u.text,
+                           max_chars=max_chars)
         if not parts:
             continue
         span = (u.end - u.start) / len(parts)

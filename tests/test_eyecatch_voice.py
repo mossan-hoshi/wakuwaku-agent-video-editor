@@ -9,6 +9,7 @@ from wwedit.publish.eyecatch_voice import (
     pick_line,
     pick_voice,
     synth_eyecatch_voice,
+    synth_eyecatch_voices,
 )
 
 
@@ -70,3 +71,34 @@ def test_synth_eyecatch_voice_honours_explicit_char_and_line(tmp_path) -> None:
         synth_fn=fake_synth,
     )
     assert char == "yume" and disp == "よし！"
+
+
+def test_synth_eyecatch_voices_batches_all_chapters_in_one_call(tmp_path) -> None:
+    """**モデル読み込みは1回**＝全章ぶんを1回の合成呼び出しにまとめる。"""
+    calls = []
+
+    def fake_batch(jobs):
+        calls.append(jobs)
+        return [1.0] * len(jobs)
+
+    made = synth_eyecatch_voices(
+        {1: 11, 2: 12, 3: 13}, tmp_path, voices=["suzu", "noa"], batch_fn=fake_batch
+    )
+    assert len(calls) == 1  # 章ごとにプロセスを起こさない
+    assert len(calls[0]) == 3
+    assert sorted(made) == [1, 2, 3]
+    for i, (wav, char, disp) in made.items():
+        assert char in ("suzu", "noa")
+        assert wav.parent == tmp_path
+        # 合成に渡すのは読み、表示は正表記
+        assert disp == pick_line({1: 11, 2: 12, 3: 13}[i])[0]
+    texts = {j["text"] for j in calls[0]}
+    assert texts <= {r for _d, r in VOICE_LINES}
+
+
+def test_qwen_voices_all_have_display_names() -> None:
+    from wwedit.publish.qwen_tts import QWEN_VOICES
+
+    assert all(v in FULL_NAME for v in QWEN_VOICES)
+    # のべつべ！のキャラだけ（実在の人の声クローンはアイキャッチに使わない）
+    assert "mossan_hoshi" not in QWEN_VOICES

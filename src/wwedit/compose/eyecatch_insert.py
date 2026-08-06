@@ -16,8 +16,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from wwedit.common.media import ffmpeg_path
-from wwedit.compose.ffmpeg_compose import _src_to_out
+from wwedit.common.media import ffmpeg_error, ffmpeg_path
+from wwedit.compose.ffmpeg_compose import _src_to_out, out_total
 from wwedit.edl.schema import Edl, TimeRange
 
 __all__ = [
@@ -39,10 +39,11 @@ def eyecatch_boundaries(
     ``ranges`` 未指定なら収録まるごと（kept_ranges）。投稿単位[K]はその単位の区間を渡す。
     """
     rgs = ranges if ranges is not None else edl.kept_ranges()
-    total = sum(r.duration for r in rgs)
+    frz = tuple(edl.freezes or ())
+    total = out_total(rgs, frz)
     chs = sorted(edl.chapters, key=lambda c: c.start_at)
     # 各章の出力開始秒（0..total にクランプ）。i==0 の特別扱いはしない。
-    pts = [(min(max(_src_to_out(rgs, c.start_at), 0.0), total), c) for c in chs]
+    pts = [(min(max(_src_to_out(rgs, c.start_at, frz), 0.0), total), c) for c in chs]
     out: list[dict] = []
     for j, (ot, c) in enumerate(pts):
         oe = pts[j + 1][0] if j + 1 < len(pts) else total
@@ -92,18 +93,24 @@ def _pick_jingle(jingle_dir: Path, seed: int) -> Path | None:
     return random.Random(seed).choice(cands) if cands else None
 
 
-def _synth_voice(out_wav: Path, seed: int) -> tuple[Path | None, str]:
-    """章 seed でキャラ＋一言を選び合成する。失敗したら ``(None, "")``（音楽へフォールバック）。"""
+def _synth_voices(work: Path, seeds: dict[int, int]) -> dict[int, tuple[Path, str]]:
+    """全章ぶんの一言を**まとめて**合成する。失敗したら ``{}``（音楽へフォールバック）。
+
+    Qwen3-TTS はモデル読み込みが重いので、章ごとに合成せず1回で全部作る。
+    """
     from wwedit.publish.character import full_name
-    from wwedit.publish.eyecatch_voice import synth_eyecatch_voice
+    from wwedit.publish.eyecatch_voice import synth_eyecatch_voices
 
     try:
-        wav, char, disp, _dur = synth_eyecatch_voice(out_wav, seed=seed)
-    except Exception as e:  # SBV2サーバ未起動など。アイキャッチ自体は出す。
+        made = synth_eyecatch_voices(seeds, work)
+    except Exception as e:  # 推論環境が無いなど。アイキャッチ自体は出す。
         print(f"  [warn] アイキャッチ音声の合成に失敗（音楽へ退避）: {e}")
-        return (None, "")
-    print(f"  アイキャッチ音声: {full_name(char)}「{disp}」")
-    return (wav, full_name(char))
+        return {}
+    out: dict[int, tuple[Path, str]] = {}
+    for i, (wav, char, disp) in sorted(made.items()):
+        print(f"  アイキャッチ音声[章{i}]: {full_name(char)}「{disp}」")
+        out[i] = (wav, full_name(char))
+    return out
 
 
 def insert_eyecatches(
@@ -155,12 +162,13 @@ def insert_eyecatches(
     # アイキャッチ生成（対象章のみ）。ffmpeg入力番号 = 生成順に 1..M（0=本編）
     cmd = [ffmpeg_path(), "-y", "-i", str(main_mp4)]
     ec_input_of: dict[int, int] = {}
+    made_voices: dict[int, tuple[Path, str]] = {}
+    if voice:
+        made_voices = _synth_voices(work, {i: seed_base + i for i in ec_chapters})
     for n_ec, i in enumerate(ec_chapters):
         b = bounds[i]
         seed = seed_base + i
-        vwav, vname = (None, "")
-        if voice:
-            vwav, vname = _synth_voice(work / f"ec_{i:02d}.wav", seed)
+        vwav, vname = made_voices.get(i, (None, ""))
         jingle = None
         if vwav is None and jdir and jdir.exists():
             jingle = _pick_jingle(jdir, seed)
@@ -205,7 +213,7 @@ def insert_eyecatches(
     proc = subprocess.run(cmd, capture_output=True, text=True,
                           encoding="utf-8", errors="replace")
     if proc.returncode != 0:
-        tail = "\n".join((proc.stderr or "").splitlines()[-20:])
+        tail = ffmpeg_error(proc.stderr)
         raise RuntimeError(f"アイキャッチ挿入失敗:\n{tail}")
     return out_path, shifted_chapter_lines(edl, ranges, duration=duration,
                                            skip_first=skip_first)

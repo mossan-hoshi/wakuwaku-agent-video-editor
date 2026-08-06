@@ -44,7 +44,10 @@ def run(
         else load_model(model_size, compute_type=compute_type)
     )
 
-    per_speaker = {}
+    # 同じ話者が**複数トラックを持つことがある**（Zoomが端末/再入室ごとにトラックを分ける。
+    # 例: audioTaniguchi2 / audioTaniguchi3）。上書き代入すると先のトラックが丸ごと消え、
+    # その話者の発話が字幕/章から抜け落ちる（2026-08-03 で実際に踏んだ）。**必ず足し合わせる**。
+    per_speaker: dict[str, list] = {}
     for t in tracks:
         rprint(f"[cyan]文字起こし[/]: {t.speaker} ({Path(t.path).name})")
         words = (
@@ -52,8 +55,14 @@ def run(
             if use_x
             else transcribe_track(bundle, t.path, vad_filter=vad)
         )
-        per_speaker[t.speaker] = words
+        if t.speaker in per_speaker:
+            rprint(f"  [yellow]同じ話者の追加トラック[/]: {t.speaker} に足し合わせる")
+        per_speaker.setdefault(t.speaker, []).extend(words)
         rprint(f"  → {len(words)} words")
+
+    # 足し合わせたので時刻順に並べ直す（``words_to_utterances`` は順序を前提にする）。
+    for words in per_speaker.values():
+        words.sort(key=lambda w: w.start)
 
     edl.utterances = merge_speakers(per_speaker, gap_s=gap)
     save_edl(edl, edl_path)
