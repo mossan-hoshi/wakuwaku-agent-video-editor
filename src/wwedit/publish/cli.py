@@ -33,6 +33,10 @@ def description(
     allow_invalid_chapters: bool = typer.Option(
         False, "--allow-invalid-chapters",
         help="章がYouTubeの条件を満たさなくても異常終了しない（既定は弾く）"),
+    voice_char: list[str] = typer.Option(
+        None, "--voice-char",
+        help="**EDLの外**で声が入るキャラID（イントロ等）。本編キャストと合わせて"
+             "ライセンスのクレジットを自動で概要欄へ入れる。複数指定可"),
 ) -> None:
     """YouTube 概要欄を**チャンネル実フォーマット**で組み立てる。
 
@@ -77,6 +81,15 @@ def description(
     intro_text = (intro_file.read_text(encoding="utf-8").strip()
                   if intro_file and intro_file.exists() else "")
 
+    # 🚨 **声を借りているキャラのクレジットを自動で足す**（CC-BY 等は表示が義務）。
+    # 本編のキャスト（EDL）＋ イントロで喋るキャラ（EDL の外なので --voice-char で渡す）。
+    from wwedit.publish.character import voice_credits
+
+    cast = list((edl.character_cast or {}).values()) if edl.character_cast else []
+    for c in voice_credits([*cast, *(voice_char or [])]):
+        if c not in links:
+            links.append(c)
+
     text = build_description(edl, agenda=agenda_text, intro=intro_text, links=links or None,
                              hashtags=hashtags or None, chapter_lines=ch_lines)
     default = (
@@ -116,10 +129,15 @@ def thumbnail(
                   "構図・キャラの表情/ポーズ・背景まで含めて記述。文字もモデルが描く）"),
     char: str = typer.Option("noa", help="参照する立ち姿キャラID（絵柄/キャラ固定）。空で参照なし"),
     model: str = typer.Option(
-        "gemini-3-pro-image", help="画像モデル（既定=nano banana 2＝日本語タイポも崩れにくい）"),
+        None, help="画像モデル（既定=nano banana 2＝日本語タイポも崩れにくい）"),
     out: Path = typer.Option(None, help="出力PNG（既定 data/<date>/thumbnail.png）"),
     image_size: str = typer.Option(
-        "2K", help="解像度。**lite/flash 系は 2K 非対応なので 1K を渡す**"),
+        "2K", help="解像度。**lite/flash 系は 2K 非対応なので 1K を渡す**。"
+                   "当たりを取るだけなら 512（下見）"),
+    ref_image: list[Path] = typer.Option(
+        None, "--ref-image",
+        help="参照画像を明示する（複数可）。既定の <id>_a* は縮小版なので、"
+             "寄りの構図では <id>_c* 等の高解像度を渡す"),
 ) -> None:
     """[L] サムネ生成（**nano banana 2 一発生成**）。
 
@@ -128,11 +146,14 @@ def thumbnail(
 
     安く試すなら ``--model gemini-3.1-flash-lite-image --image-size 1K``（nano banana 2 lite）。
     """
-    from wwedit.publish.thumbnail import generate_thumbnail
+    from wwedit.publish.thumbnail import NANO_BANANA_2, generate_thumbnail
 
+    model = model or NANO_BANANA_2
     out_path = out or (edl_path.parent / "thumbnail.png")
     rprint(f"[dim]サムネ一発生成中（{model}/{image_size}・参照={char or 'なし'}・課金あり）...[/]")
-    generate_thumbnail(prompt, out_path, char=char or None, model=model, image_size=image_size)
+    generate_thumbnail(prompt, out_path, char=char or None, model=model,
+                       image_size=image_size,
+                       ref_images=list(ref_image) if ref_image else None)
     rprint(f"[green]サムネ[/]: {out_path}（nano banana 2 一発生成・文字込み）")
 
 
@@ -149,7 +170,10 @@ def infographic(
     aspect_ratio: str = typer.Option("21:9", help="生成アスペクト（横長）"),
     image_size: str = typer.Option("2K", help="解像度。lite/flash 系は 1K を渡す"),
     out: Path = typer.Option(None, help="出力PNG（既定 data/<date>/infographic.png）"),
-    seconds: float = typer.Option(10.0, help="本編冒頭で表示する秒数"),
+    seconds: float = typer.Option(15.0, help="本編冒頭で表示する秒数"),
+    post_unit_index: int = typer.Option(
+        -1, help="投稿単位。指定すると**その単位の章/字幕だけ**を入力にして、"
+                 "図解をその単位に紐づける（前後半で話題が違うので使い回さない）"),
     prompt_only: bool = typer.Option(
         False, "--prompt-only",
         help="APIを叩かずプロンプトだけ出す（**課金前の査収用**）"),
@@ -181,47 +205,118 @@ def infographic(
         raise typer.BadParameter(
             "タイトル・概要欄・チャプターのどれも無い（骨子が決まらないので図解を作れない）")
 
-    source = build_source_text(edl, title=title_text, description=desc_text)
+    # 投稿単位を指定したら、その単位の章/字幕だけを入力にする（別の話題を混ぜない）。
+    # 🚨 判定は **kept区間の中か**（[lo,hi] の範囲ではなく）。範囲で見るとカット済みの
+    #    発話まで拾う（2026-08-08: 消したはずの意味不明発話が図解の入力に残っていた）。
+    # 🚨 章の時刻は **その単位の出力秒へ写す**。ソース秒のままだと後半の図解に
+    #    「26:16」のような収録全体の時刻が描かれて嘘になる。
+    src_edl = edl
+    if post_unit_index >= 0:
+        from wwedit.edl.postunit import _src_to_out, post_unit_ranges
+
+        rs = post_unit_ranges(edl, post_unit_index)
+        if not rs:
+            raise typer.BadParameter(f"投稿単位 {post_unit_index} に区間が無い")
+        frz = tuple(edl.freezes or ())
+
+        lo, hi = rs[0].start, rs[-1].end
+
+        def _inside(t: float) -> bool:
+            return any(r.start - 1e-6 <= t < r.end + 1e-6 for r in rs)
+
+        def _in_unit(t: float) -> bool:
+            # 🚨 章は kept 判定にしない。章の開始時刻は**無音カットで消えた瞬間**に
+            #    載ることがあり（2026-08-24: 10章中2章がそうだった）、kept で絞ると
+            #    図解の章一覧からその章が丸ごと欠ける。章は時間範囲で判定する。
+            #    末尾は排他＝次の単位の先頭章を拾わない。
+            return lo - 1e-6 <= t < hi - 1e-6
+
+        chs = [c for c in sorted(edl.chapters, key=lambda c: c.start_at)
+               if _in_unit(c.start_at)]
+        src_edl = edl.model_copy(update={
+            "chapters": [
+                c.model_copy(update={
+                    "start_at": 0.0 if i == 0 else _src_to_out(rs, c.start_at, frz)})
+                for i, c in enumerate(chs)
+            ],
+            "subtitles": [s for s in edl.subtitles if _inside(s.start)],
+        })
+
+    # 図解は画像なので、焼かれてしまうと後から消せない。**入口で秘匿語を落とす**
+    from wwedit.privacy.masking import load_mask_terms, load_name_replacements
+
+    mask_terms = load_mask_terms()
+    name_map = load_name_replacements()
+    source = build_source_text(src_edl, title=title_text, description=desc_text,
+                               mask_terms=mask_terms, name_map=name_map)
+    sfx = "" if post_unit_index < 0 else f"_p{post_unit_index}"
     if prompt_only:
-        prompt_path = edl_path.parent / "infographic_prompt.txt"
+        prompt_path = edl_path.parent / f"infographic_prompt{sfx}.txt"
         prompt_path.write_text(build_prompt(source), encoding="utf-8")
         rprint(f"[green]プロンプト[/]: {prompt_path}（{len(source)}字の入力・API未実行）")
         return
 
-    out_path = out or (edl_path.parent / "infographic.png")
+    out_path = out or (edl_path.parent / f"infographic{sfx}.png")
     mdl = model or DEFAULT_MODEL
     rprint(f"[dim]図解生成中（{mdl}/{image_size}/{aspect_ratio}・"
            f"入力{len(source)}字・課金あり・1枚勝負）...[/]")
     saved, prompt = generate_infographic(
-        edl, out_path, title=title_text, description=desc_text,
+        src_edl, out_path, title=title_text, description=desc_text,
         model=mdl, aspect_ratio=aspect_ratio, image_size=image_size)
-    (edl_path.parent / "infographic_prompt.txt").write_text(prompt, encoding="utf-8")
+    (edl_path.parent / f"infographic_prompt{sfx}.txt").write_text(prompt, encoding="utf-8")
 
-    cfg = edl.infographic or InfographicConfig()
+    unit = edl.post_units[post_unit_index] if post_unit_index >= 0 else None
+    cfg = (unit.infographic if unit else edl.infographic) or InfographicConfig()
     cfg.enabled = True
     cfg.path = str(saved.resolve())
     cfg.duration_s = seconds
-    edl.infographic = cfg
+    if unit is not None:
+        unit.infographic = cfg          # その投稿単位だけに紐づける
+    else:
+        edl.infographic = cfg
     save_edl(edl, edl_path)
     rprint(f"[green]図解[/]: {saved}（本編冒頭 {seconds:g} 秒に表示・EDL更新済み）")
-    for t, title in _chapters_inside(edl, cfg.start_s, cfg.start_s + seconds):
+    for t, title in _chapters_inside(edl, cfg.start_s, cfg.start_s + seconds,
+                                     post_unit_index=post_unit_index):
         rprint(f"[yellow]注意[/]: 表示中({t:.1f}s)に章境界『{title}』がある。"
                "`--eyecatch` を使うとここでアイキャッチが割り込んで図解が分断される "
                f"→ `--infographic-seconds {max(1.0, t - cfg.start_s):.0f}` 等で短くする")
     rprint("[dim]次: compose video --infographic で確認（安全枠に自動収め）[/]")
 
 
-def _chapters_inside(edl, out_start: float, out_end: float) -> list[tuple[float, str]]:
+def _chapters_inside(edl, out_start: float, out_end: float, *,
+                     post_unit_index: int = -1) -> list[tuple[float, str]]:
     """[out_start, out_end) の**内側**に落ちる章境界（出力秒, タイトル）を返す。
 
     `--eyecatch` は章境界に2秒のアイキャッチを割り込ませるので、図解の表示中に境界があると
     図解が真っ二つになる。先頭(0秒)の境界は図解より前に出るだけなので含めない。
+
+    🚨 投稿単位を指定したら**その単位の時間軸で**測る。収録まるごとの時刻で測ると、
+    別の単位の章を「表示中にある」と誤報する（2026-09-08: 後半の図解に前半の章名が出た）。
     """
     from wwedit.chapter.detect import source_to_output
 
+    ranges = None
+    if post_unit_index >= 0:
+        from wwedit.edl.postunit import post_unit_ranges
+
+        ranges = post_unit_ranges(edl, post_unit_index)
+
+    def _to_out(t: float) -> float:
+        if ranges is None:
+            return source_to_output(edl, t)
+        from wwedit.edl.postunit import _src_to_out
+
+        return _src_to_out(ranges, t, tuple(edl.freezes or ()))
+
+    chapters = sorted(edl.chapters, key=lambda c: c.start_at)
+    if ranges is not None:
+        lo, hi = ranges[0].start, ranges[-1].end
+        chapters = [c for c in chapters if lo - 1e-6 <= c.start_at < hi - 1e-6]
+
     out: list[tuple[float, str]] = []
-    for i, c in enumerate(sorted(edl.chapters, key=lambda c: c.start_at)):
-        ot = 0.0 if i == 0 else source_to_output(edl, c.start_at)
+    for i, c in enumerate(chapters):
+        ot = 0.0 if i == 0 else _to_out(c.start_at)
         if out_start < ot < out_end:
             out.append((ot, c.chapter_title or f"チャプター{i + 1}"))
     return out
@@ -261,12 +356,18 @@ def voice_cast(
     method: str = typer.Option(..., help="音声方式: seedvc(声質変換) / tts(読み上げ)"),
     chars: str = typer.Option(
         "", help="キャラ指名（カンマ区切り・話者名ソート順に割当。空=ランダム）"),
+    ref_set: str = typer.Option(
+        "", "--ref-set",
+        help="参照セット指名（`noa=set5,souta=set2` 形式。空=各キャラの先頭セット）"),
 ) -> None:
     """[V] 話者→のべつべキャラの割当（音声変換・字幕色・ちびキャラの共有SoT）。
 
     参照音声のあるキャラからランダムに選ぶ（リロール=再実行 / 指名=--chars）。
     字幕色は自動でキャラテーマ色になり、ちびキャラ表示も有効化される。
     実行前に承認を取る運用（auto-edit の G-V ゲート）。戻すのは voice-revert。
+
+    ``--ref-set`` はそのキャラの**どの参照セットを声の基準にするか**。方式A/B の両方に
+    同じ指定が効く。回ごとの判断なのでコード側に既定値は持たない。
     """
     from wwedit.edl.schema import save_edl
     from wwedit.publish.qwen_tts import available_voices
@@ -275,9 +376,15 @@ def voice_cast(
     edl = load_edl(edl_path)
     pool = available_voices()
     char_list = [c.strip() for c in chars.split(",") if c.strip()] or None
+    refs: dict[str, str] = {}
+    for pair in (p.strip() for p in ref_set.split(",") if p.strip()):
+        if "=" not in pair:
+            raise typer.BadParameter(f"--ref-set は `キャラ=セット` 形式: {pair!r}")
+        c, s = pair.split("=", 1)
+        refs[c.strip()] = s.strip()
     try:
         cast = pick_cast(edl, chars=char_list, pool=pool)
-        apply_cast(edl, cast, method=method)
+        apply_cast(edl, cast, method=method, ref_sets=refs)
     except ValueError as e:
         raise typer.BadParameter(str(e)) from e
     save_edl(edl, edl_path)
@@ -347,9 +454,10 @@ def voice_convert_cmd(
         manifest = build_manifest(edl, method="seedvc", work_dir=work)
         rprint(f"  チャンク {len(manifest['chunks'])} 件")
 
+    ref_sets = (edl.meta.get("voice") or {}).get("ref_sets") or {}
     refs: dict[str, Path] = {}
     for speaker, char in edl.character_cast.items():
-        refs[speaker] = build_char_ref(char)
+        refs[speaker] = build_char_ref(char, start_set=ref_sets.get(char))
 
     total = len(manifest["chunks"])
     pending = pending_chunks(manifest)
@@ -428,9 +536,36 @@ def voice_tts_prepare(
            "→ publish voice-tts[/]")
 
 
+def _realign_decisions(edl_path: Path, decisions: dict[int, str], units: list[dict],
+                       *, keep: bool) -> dict[int, str]:
+    """台本をいまのターン番号へ貼り直し、**ずれていたなら目立つように報告する**。"""
+    from wwedit.publish.voice_tts import TSV_NAME, realign_decisions
+
+    decisions, lost, moved = realign_decisions(
+        units, decisions, edl_path.parent / TSV_NAME, keep=keep)
+    if keep:
+        rprint("[yellow]台本の貼り直しをしない[/]（--keep-stale）")
+        return decisions
+    if moved:
+        rprint(f"[red]台本のターン番号が {moved} 件ずれていた[/]"
+               "（G2 でカットを直したぶん）→ 本文で照合して貼り直した")
+    if lost:
+        head = "、".join(str(i) for i in lost[:20]) + ("…" if len(lost) > 20 else "")
+        rprint(f"[red]対応する台本が無いターン {len(lost)} 件[/]: {head}")
+        rprint("[yellow]いまの文字起こしをそのまま読む（カット後に残った語だけなので"
+               "切った内容は入らないが、整形されていない）[/]")
+    if moved or lost:
+        rprint("[dim]きれいに直すなら publish voice-tts-prepare → voice-scripter スキルで"
+               "台本を作り直す[/]")
+    return decisions
+
+
 @publish_app.command(name="voice-tts-subtitles")
 def voice_tts_subtitles(
     edl_path: Path = typer.Argument(..., help="対象 EDL（voice-scripter 済み）"),
+    keep_stale: bool = typer.Option(
+        False, "--keep-stale",
+        help="**台本のターン番号を貼り直さない**（既定は本文で照合して貼り直す）"),
 ) -> None:
     """[V] 方式B: **合成前に**読み上げ文から字幕を貼る（G2 で内容を確認するため）。
 
@@ -455,9 +590,11 @@ def voice_tts_subtitles(
     if not dec_path.exists():
         raise typer.BadParameter(f"{dec_path} が無い（voice-scripter スキルを先に）")
     decisions = load_decisions(dec_path)
+    units = tts_units(edl)
+    decisions = _realign_decisions(edl_path, decisions, units, keep=keep_stale)
     terms = load_terms(edl_path.parent / TERMS_NAME)
     # 台本を最初に読むコマンドなので、**合成に入る前に**長すぎる1文を知らせる
-    _warn_long_sentences(tts_clips(tts_units(edl), decisions))
+    _warn_long_sentences(tts_clips(units, decisions))
     rows = reading_rows(edl, decisions)
     subs = subtitles_from_reading(rows, decisions, edl.kept_ranges(), (), terms=terms)
     if not subs:
@@ -479,6 +616,12 @@ def voice_tts_cmd(
         0, help="この実行で合成するジョブ数（0=全部・分割実行したいときだけ指定）。"
                 "**1回の実行につきモデル読み込みが約105秒**かかるので、分けるほど遅くなる"),
     seed: int = typer.Option(0, help="生成シード"),
+    keep_stale: bool = typer.Option(
+        False, "--keep-stale",
+        help="**台本のターン番号を貼り直さない**（既定は本文で照合して貼り直す）"),
+    allow_drift: bool = typer.Option(
+        False, "--allow-drift",
+        help="**アンカーが元発話位置からずれていても続行する**（既定は止める）"),
 ) -> None:
     """[V] 方式B: 決定JSONの読み上げ文を Qwen3-TTS で**文単位**に一括合成する。
 
@@ -518,6 +661,7 @@ def voice_tts_cmd(
         nxt = _src_to_out(ranges, units[k + 1]["start"]) if k + 1 < len(units) else total
         slots[un["uid"]] = (max(0.0, oe - os_), max(0.0, nxt - oe))
 
+    decisions = _realign_decisions(edl_path, decisions, units, keep=keep_stale)
     missing = [u["uid"] for u in units if u["uid"] not in decisions]
     if missing:
         rprint(f"[yellow]決定が無いターン {len(missing)} 件は元テキストで合成する[/]")
@@ -541,6 +685,7 @@ def voice_tts_cmd(
     # **合成の単位は「文」**（空文字のターンは読み上げない・キー無しは元テキスト）。
     clips = tts_clips(units, decisions)
     _warn_long_sentences(clips)
+    _tts_ref_sets: dict[str, str] = (edl.meta.get("voice") or {}).get("ref_sets") or {}
     jobs: list[dict] = []
     for c in clips:
         text = c["text"]
@@ -550,9 +695,14 @@ def voice_tts_cmd(
         # 文は短いので、尺ヒントは**読み上げ文の文字数**から見積もる（実測0.134秒/字）。
         # 枠(slot+gap)から取ると相槌1つに30秒のヒントが付いて生成が遅くなる。
         dur_hint = min(30.0, max(2.0, len(text) * 0.134 * 1.6))
-        jobs.append({"text": text, "out": str(out_wav),
-                     "char": edl.character_cast.get(c["speaker"], "noa"),
-                     "seed": seed, "dur": dur_hint, "_idx": c["key"]})
+        char = edl.character_cast.get(c["speaker"], "noa")
+        job = {"text": text, "out": str(out_wav), "char": char,
+               "seed": seed, "dur": dur_hint, "_idx": c["key"]}
+        # 参照セットは EDL（voice-cast --ref-set）が持つ。**方式A と同じセット**を使う
+        # ＝ A/B で声が揃う。未指定ならランナー側がそのキャラの先頭セットへ落ちる。
+        if _tts_ref_sets.get(char):
+            job["ref"] = _tts_ref_sets[char]
+        jobs.append(job)
     if jobs:
         # 0 = 全部。**分けるほど遅くなる**（1実行につきモデル読み込みが約105秒。
         # 実測: 120本を60本ずつ分けたら、合成37.8分に対し読み込みが21分ぶん乗った）。
@@ -589,6 +739,8 @@ def voice_tts_cmd(
     # 映像側（`timewarp.anchors_with_rows`）は行ごとに src 区間を見るので、3文が全部
     # 同じ区間を指すとアンカーが重なって速度計画が壊れる。
     src_span = _split_turn_spans(clips, durs, ranges)
+    # === 整列ゲート ===  ここで落とさないと、気づくのは数時間後の完成品になる。
+    _anchor_gate(edl, clips, src_span, allow=allow_drift)
     items = [(_src_to_out(ranges, src_span[i][0]), durs[i], i) for i in range(len(clips))]
     want_by_i = {k: w for w, d, k in items}
     # **PCシステム音が鳴っている区間は詰めない**（デモの音がそのまま鳴っているので、
@@ -619,8 +771,10 @@ def voice_tts_cmd(
         encoding="utf-8")
     rprint(f"[green]スケジュール確定[/]: {len(rows)}クリップ / 読み上げ計 "
            f"{sum(r['tts_s'] for r in rows):.0f}秒（出力尺 {total:.0f}秒）→ {report_path}")
-    rprint(f"[dim]ドリフト: 最大 {drifts[0]:.1f}秒 / 中央値 "
-           f"{drifts[len(drifts) // 2]:.1f}秒[/]")
+    # ⚠️ これは**ずれの指標ではない**（読み上げが元会話より短ければ当然大きくなる）。
+    #    映像とのずれは上の「アンカー検査」が見ている。
+    rprint(f"[dim]前詰め量: 最大 {drifts[0]:.1f}秒 / 中央値 "
+           f"{drifts[len(drifts) // 2]:.1f}秒（ずれではない・warp が吸収する）[/]")
     if end_at > total:
         rprint(f"[yellow]読み上げが出力尺を {end_at - total:.1f}秒 超過[/]"
                "（finalize が末尾にフリーズを1つ入れて吸収する）")
@@ -643,6 +797,58 @@ def _warn_long_sentences(clips: list[dict]) -> None:
         rprint(f"  [dim]{c['key']:>6}[/] {len(c['text'])}字  {c['text'][:36]}…")
 
 
+#: 割り当てた src アンカーが**実際の発話位置**からどれだけずれてよいか（秒・中央値）。
+#: 2026-08-07 実測: 修正前 25.6秒 → 修正後 2.4秒。8秒は「直っていれば絶対に通る／
+#: 壊れていれば絶対に落ちる」幅。
+ANCHOR_MEDIAN_MAX_S = 8.0
+
+
+def _anchor_gate(edl, clips: list[dict], src_span: dict[int, tuple[float, float]],
+                 *, allow: bool) -> None:
+    """アンカーが**本当にその発話の位置を指しているか**を、独立した証拠で検査する。
+
+    証拠は「台本の言い換えが弱くて逐語のまま残った文」（この回は 365 中 152 文）。
+    素材のどこを喋っているかが文字照合で確実に分かるので、それを正解として
+    ``src_span`` の割り当てと突き合わせる。
+
+    🚨 **`voice_tts_report.json` の ``drift`` で判定してはいけない。**
+    ``drift`` は「直列スケジュールが希望位置からどれだけ前へ詰まったか」で、
+    読み上げが元会話より短ければ**構造的に大きくなる**（この回は中央100秒でも正常）。
+    `timewarp.build_warp` は ``out_start`` を一切見ず、**アンカーの並びと読み上げ尺**
+    だけで組むので、drift はずれの指標にならない。2026-08-07 にこれで誤って停止した。
+    ``warped_voice_tts_report.json`` の drift は構造上つねに 0 で、これも無意味。
+
+    ⚠️ **報告だけにしない。** 印字するだけの実装だったとき、「中央値62秒」を見て
+    おきながら先へ進めて、数時間ぶんを捨てた。
+    """
+    import statistics
+
+    from wwedit.publish.voice_tts import anchor_clips
+
+    truth = anchor_clips(edl, clips)
+    if len(truth) < 10:
+        rprint(f"[yellow]逐語のまま残った文が {len(truth)} 件しかないので"
+               "アンカーを検査できない[/]（台本が全面的に書き換えられている）")
+        return
+    err = sorted((abs(src_span[i][0] - truth[i][0]), i) for i in truth if i in src_span)
+    med = statistics.median([e for e, _ in err])
+    rprint(f"[dim]アンカー検査: 逐語一致 {len(truth)}/{len(clips)} 文で照合 → "
+           f"位置ずれ 中央 {med:.1f}秒 / 90%tile "
+           f"{err[int(len(err) * 0.9)][0]:.1f}秒[/]")
+    if med <= ANCHOR_MEDIAN_MAX_S:
+        return
+    rprint(f"[red]整列ゲート: アンカーが発話位置とずれている"
+           f"（中央値 {med:.0f}秒 / 上限 {ANCHOR_MEDIAN_MAX_S:.0f}秒）[/]")
+    for e, i in err[-5:]:
+        rprint(f"  [dim]{clips[i]['key']:>6}[/] {e:+.0f}s  {clips[i]['text'][:34]}")
+    rprint("[yellow]このまま合成すると**映像と音声がずれる**。"
+           "台本が中身を別のターンへ移していないか確認する[/]")
+    if not allow:
+        raise typer.BadParameter(
+            "アンカーがずれているので合成へ進まない。台本を直すか --allow-drift")
+    rprint("[red]--allow-drift が指定されたので続行する[/]")
+
+
 def _split_turn_spans(
     clips: list[dict], durs: dict[int, float], ranges,
 ) -> dict[int, tuple[float, float]]:
@@ -653,23 +859,43 @@ def _split_turn_spans(
 
     これをやらないと、同じターンを割った文が全部**同じ src 区間**を指し、
     `timewarp.anchors_with_rows` のアンカーが重なって映像の速度計画が壊れる。
+
+    🚨 **区間は「次に読むターンの開始」まで延ばす。**
+    voice-scripter は相槌などのターンを空にして中身を隣へまとめる（この回は 197 中
+    105 件が空）。ターン自身の区間しか使わないと**空にしたターンの時間が宙に浮き**、
+    読み上げに対して素材が足りなくなる。2026-08-07 実測（逐語一致した 152 文の実位置
+    と比べて）:
+
+    ==============  ==============  ==================
+    区間            位置ずれ中央値  素材/読み上げ比
+    ==============  ==============  ==================
+    ターン自身      25.6 秒         0.68（3割不足）
+    次ターンまで     2.4 秒         1.01
+    ==============  ==============  ==================
+
+    延ばすと、空ターンが前後どちらへまとめられたかに関係なく区間が隙間なく単調に
+    並ぶ。「吸収の向きを当てにいく」実装より確実。
     """
     from wwedit.compose.ffmpeg_compose import _src_to_out, out_to_src
 
-    by_uid: dict[int, list[int]] = {}
+    # clips は時刻順なので、同じ uid は連続している（隣り合う塊としてまとめる）
+    order: list[tuple[int, list[int]]] = []
     for i, c in enumerate(clips):
-        by_uid.setdefault(c["uid"], []).append(i)
+        if not order or order[-1][0] != c["uid"]:
+            order.append((c["uid"], []))
+        order[-1][1].append(i)
     out: dict[int, tuple[float, float]] = {}
-    for idxs in by_uid.values():
+    for k, (_uid, idxs) in enumerate(order):
         c0 = clips[idxs[0]]
-        if len(idxs) == 1:
-            out[idxs[0]] = (float(c0["start"]), float(c0["end"]))
-            continue
-        o_s, o_e = _src_to_out(ranges, c0["start"]), _src_to_out(ranges, c0["end"])
+        s, e = float(c0["start"]), float(c0["end"])
+        if k + 1 < len(order):
+            # 次に読むターンの開始まで受け持つ（あいだの空ターンぶんを引き取る）
+            e = max(e, float(clips[order[k + 1][1][0]]["start"]))
+        o_s, o_e = _src_to_out(ranges, s), _src_to_out(ranges, e)
         total_d = sum(durs[i] for i in idxs) or 1.0
         pos = o_s
-        for k, i in enumerate(idxs):
-            nxt = o_e if k == len(idxs) - 1 else pos + (o_e - o_s) * (durs[i] / total_d)
+        for j, i in enumerate(idxs):
+            nxt = o_e if j == len(idxs) - 1 else pos + (o_e - o_s) * (durs[i] / total_d)
             out[i] = (out_to_src(ranges, pos), out_to_src(ranges, max(pos, nxt)))
             pos = nxt
     return out
@@ -889,16 +1115,60 @@ def character_image(
     situation: str = typer.Option(
         ..., help="変える点＝季節/服装/シチュ（英語prompt断片）。重複回避は intro-builder 側"),
     out: Path = typer.Option(..., help="出力 png"),
-    model: str = typer.Option("gemini-3-pro-image", help="nano banana2"),
+    model: str = typer.Option(None, help="画像モデル（既定=nano banana 2）"),
+    framing: str = typer.Option(
+        "", help="構図（英語prompt断片・**自由文**）。ショットサイズ/カメラ高さ/体の向き/"
+                 "姿勢/画面内の位置など。**直近10本と被らせない**（intro-generation-log）"),
+    ref_image: list[Path] = typer.Option(
+        None, help="参照画像を明示する（複数可）。既定は <id>_a* の1枚だが、それは LP 用の"
+                   "縮小版で顔が小さい。**引きの構図では <id>_c* 等の高解像度を渡す**"),
+    list_refs: bool = typer.Option(
+        False, "--list-refs", help="そのキャラの参照候補をサイズ順に出して終了（無課金）"),
+    image_size: str = typer.Option(
+        None, help="解像度。既定は**下見の 0.5K**。当たりが出たら --final で 2K。"
+                   "0.5K/1K/2K/4K（大文字K必須）。lite モデルは 1K のみ"),
+    final: bool = typer.Option(
+        False, "--final", help="本番解像度(2K)で焼く。**下見で当たりを取ってから使う**"),
+    expression: str = typer.Option(
+        "", help="表情を上書き（既定は mascot.md 準拠のキャラ既定）。"
+                 "その絵だけ笑わせたくない等。**キャラ設定そのものは変えない**"),
 ) -> None:
-    """[G] イントロ開始フレーム生成（**決定的**・参照画像＋同一性維持制約＋リップシンク構図）。
+    """[G] イントロ開始フレーム生成（**決定的**・参照画像＋同一性維持制約）。
 
-    「どんな服装/シチュにするか（過去と非重複・季節合わせ）」の創作は呼び出し側が situation で渡す。
+    「どんな服装/シチュ/構図にするか（過去と非重複・季節合わせ）」の創作は**すべて呼び出し側**。
+    コード側は破綻回避の下限（口が見える・顔が切れない・3/4より外へ向かない）だけを足す。
+
+    🚨 **2段構え。** 既定は `DRAFT_SIZE`＝0.5K の下見で、構図・服装・背景の当たりを取る。
+    ユーザーが良しとした**同じプロンプトのまま** `--final` を付けて 2K を焼く。
+    いきなり 2K を焼かない（2026-09-09 ユーザー指示）。
     """
-    from wwedit.publish.character import generate_character_image
+    from wwedit.publish.character import (
+        DRAFT_SIZE,
+        FINAL_SIZE,
+        available_character_refs,
+        generate_character_image,
+    )
+    from wwedit.publish.thumbnail import NANO_BANANA_2
 
-    p = generate_character_image(char, situation, out, model=model)
-    rprint(f"[green]開始フレーム[/]: {p}（{char} 参照＋同一性維持）")
+    if list_refs:
+        for r in available_character_refs(char):
+            rprint(f"  {r.stat().st_size / 1024:8.0f}KB  {r}")
+        return
+
+    size = image_size or (FINAL_SIZE if final else DRAFT_SIZE)
+    mdl = model or NANO_BANANA_2
+    rprint(f"[dim]開始フレーム生成中（{mdl}/{size}"
+           f"{'・**本番**' if size == FINAL_SIZE else '・下見'}・課金あり）...[/]")
+    p = generate_character_image(
+        char, situation, out, model=mdl, framing=framing,
+        ref_images=list(ref_image) if ref_image else None, image_size=size,
+        expression=expression)
+    used = "、".join(Path(x).name for x in ref_image) if ref_image else f"{char}_a*"
+    rprint(f"[green]開始フレーム[/]: {p}（{size}・参照={used}＋同一性維持"
+           f"・構図={framing or '指定なし'}）")
+    if size != FINAL_SIZE:
+        rprint("[yellow]これは下見[/]。良ければ**同じ situation/framing のまま** "
+               "`--final` を付けて焼き直すこと")
 
 
 @publish_app.command()

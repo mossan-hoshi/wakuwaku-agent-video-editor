@@ -1,4 +1,4 @@
-"""[L] サムネイル生成（nano banana 2 = gemini-3-pro-image 一発生成）。
+"""[L] サムネイル生成（nano banana 2 一発生成）。
 
 **方針（確定）**: サムネは **nano banana 2 で一発生成**する＝キャラ・背景・**日本語タイトル文字まで
 モデルが一括で描く**。キャラ/絵柄は**立ち姿 `<id>_a*.webp` を参照画像**に渡して固定する
@@ -14,21 +14,62 @@ from __future__ import annotations
 
 import base64
 import json
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
-# nano banana=gemini-2.5-flash-image（既定・安価）/ 高品質は gemini-3-pro-image。
-DEFAULT_MODEL = "gemini-2.5-flash-image"
+# 画像モデルの**単一の定義場所**。`models.list` の displayName で確認済み（2026-08-06）。
+#
+# ⚠️ 名前の対応を取り違えないこと。`gemini-3-pro-image` は **Nano Banana Pro** であって
+#    nano banana 2 ではない。リポジトリ中でこれを「nano banana 2」と書いていたため、
+#    「nano2 で作って」の指示を pro で実行する事故が起きた（2026-08-06）。
+# ⚠️ 使ってよいのは**この2つだけ**（ユーザー指示・2026-08-06）。
+#    - Nano Banana Pro (`gemini-3-pro-image`) は高すぎるので使わない
+#    - 旧 Nano Banana (`gemini-2.5-flash-image`) も使わない
+#    使わないモデルは定数も置かない（置くと既定に紛れ込む）。
+NANO_BANANA_2 = "gemini-3.1-flash-image"             # Nano Banana 2
+NANO_BANANA_2_LITE = "gemini-3.1-flash-lite-image"   # Nano Banana 2 Lite
+
+DEFAULT_MODEL = NANO_BANANA_2
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
+#: キーの出所（novtube の生成ハーネスと同じ GCP プロジェクト）。
+_SECRET_PROJECT = "cosmic-talent-450413-f9"
+_SECRET_NAME = "GEMINI_API_KEY"
+
+
 def _api_key() -> str:
+    """``.env`` を優先し、無ければ GCP Secret Manager から取り直す。
+
+    novtube 側の ``fetch_api_key()`` と同じ2段構え（env 優先 → ``gcloud secrets versions
+    access latest``）。``.env`` が未設定・期限切れでも、gcloud にログインしていれば通る。
+    """
+    import shutil
+    import subprocess
+
     from wwedit.common.env import env_value
 
-    key = env_value("GEMINI_API_KEY")
-    if not key:
-        raise RuntimeError("GEMINI_API_KEY が .env にありません（secret manager から設定）")
-    return key
+    key = env_value(_SECRET_NAME)
+    if key:
+        return key
+    gcloud = shutil.which("gcloud") or shutil.which("gcloud.cmd")
+    if gcloud:
+        try:
+            r = subprocess.run(
+                [gcloud, "secrets", "versions", "access", "latest",
+                 f"--secret={_SECRET_NAME}", f"--project={_SECRET_PROJECT}"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    raise RuntimeError(
+        f"{_SECRET_NAME} が .env にも Secret Manager にもありません"
+        f"（gcloud secrets versions access latest --secret={_SECRET_NAME} "
+        f"--project={_SECRET_PROJECT}）")
 
 
 def generate_image(
@@ -41,6 +82,7 @@ def generate_image(
     api_key: str | None = None,
     timeout: int = 180,
     temperature: float | None = None,
+    retries: int = 3,
 ) -> bytes:
     """Gemini ネイティブ画像生成で画像バイト列(PNG)を返す。
 
@@ -68,16 +110,45 @@ def generate_image(
         headers={"Content-Type": "application/json", "X-Goog-Api-Key": key},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        payload = json.loads(resp.read().decode())
+    # 一時的な失敗は指数バックオフで数回粘る（novtube 側と同じ流儀）。
+    # 課金は成功した生成にだけ発生するので、接続エラーでバッチ全体を落とす方が損。
+    payload = None
+    delay = 2.0
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode())
+            break
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            if attempt == retries - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 30.0)
+    if payload is None:
+        raise RuntimeError("gemini image: 応答が取得できません")
     if payload.get("error"):
         raise RuntimeError(f"gemini image error: {payload['error'].get('message')}")
+    said: list[str] = []
     for cand in payload.get("candidates", []):
         for part in cand.get("content", {}).get("parts", []):
             inline = part.get("inlineData")
             if inline and inline.get("data"):
                 return base64.standard_b64decode(inline["data"])
-    raise RuntimeError("gemini image: 応答に画像がありません")
+            if part.get("text"):
+                said.append(str(part["text"]).strip())
+    # 画像が無いときは**理由を捨てない**。安全フィルタで落ちたのか、モデルが
+    # 「描けない」と文章で返したのか、単なる打ち切りかで打ち手が全く違う。
+    why = [f"finishReason={c.get('finishReason')}"
+           for c in payload.get("candidates", []) if c.get("finishReason")]
+    fb = payload.get("promptFeedback") or {}
+    if fb.get("blockReason"):
+        why.append(f"blockReason={fb['blockReason']}")
+    for r in (fb.get("safetyRatings") or []):
+        if r.get("blocked") or r.get("probability") not in (None, "NEGLIGIBLE", "LOW"):
+            why.append(f"{r.get('category')}={r.get('probability')}")
+    detail = "／".join(why) or "理由の記載なし"
+    text = ("／モデルの返答: " + " ".join(said)[:300]) if said else ""
+    raise RuntimeError(f"gemini image: 応答に画像がありません（{detail}{text}）")
 
 
 def save_image(data: bytes, out_path: str | Path) -> Path:
@@ -92,28 +163,45 @@ def generate_thumbnail(
     out_path: str | Path,
     *,
     char: str | None = "noa",
-    model: str = "gemini-3-pro-image",
+    model: str = NANO_BANANA_2,
     assets_dir: str | Path | None = None,
     aspect_ratio: str = "16:9",
     image_size: str = "2K",
+    ref_images: list[str | Path] | None = None,
 ) -> Path:
     """サムネを **nano banana 2 で一発生成**して保存する（文字・キャラ・背景を一括描画）。
 
     ``char`` を指定すると立ち姿 ``<id>_a*.webp`` を参照画像に渡し、絵柄・キャラ同一性を固定する
     （先頭に同一性維持の制約を付与）。``prompt`` には描画したい日本語タイトル・配色・文字サイズ
     階層・構図・表情まで含めて記述する（モデルが文字も描く）。空文字キャラなら参照なし。
+
+    ``ref_images`` を渡すと **その画像を参照にする**（``char`` の自動解決を上書き・複数可）。
+    既定の ``<id>_a*`` は LP 用に縮小した立ち姿（実測 565x1024 / 30〜40KB）で、
+    寄りの構図では絵柄を再現しきれない。高解像度の ``<id>_c*`` を使いたいときはここで渡す
+    （2026-09-09 に司の開始フレームが「安っぽい水彩」になった件と同じ理由）。
+
+    ⚠️ **キャラがブレたら参照ではなくプロンプトを疑う**（2026-08-07 ユーザー指摘）。
+    「悪役のような」「劇的な陰影」のような**絵柄そのものを動かす形容を盛る**と、参照を渡して
+    いても寄せ切れなくなる。**変えたいのは表情と構図だけ**なので、そこだけ短く書く。
     """
     refs = None
     full = prompt
-    if char:
+    if char or ref_images:
         from wwedit.publish.character import (
             DEFAULT_ASSETS,
             IDENTITY_CONSTRAINT,
+            _mime_of,
             resolve_character_ref,
         )
 
-        ref = resolve_character_ref(char, assets_dir or DEFAULT_ASSETS)
-        refs = [("image/webp", ref.read_bytes())]
+        if ref_images:
+            paths = [Path(x) for x in ref_images]
+            for r in paths:
+                if not r.is_file():
+                    raise FileNotFoundError(f"参照画像が無い: {r}")
+        else:
+            paths = [resolve_character_ref(char, assets_dir or DEFAULT_ASSETS)]
+        refs = [(_mime_of(r), r.read_bytes()) for r in paths]
         full = IDENTITY_CONSTRAINT + prompt.strip()
     data = generate_image(full, model=model, aspect_ratio=aspect_ratio,
                           image_size=image_size, reference_images=refs)

@@ -66,7 +66,9 @@ def test_character_ref_and_prompt(tmp_path):
     p = build_prompt("early summer outfit, hydrangea")
     assert p.startswith(IDENTITY_CONSTRAINT)
     assert "early summer outfit, hydrangea" in p
-    assert "bust-up" in p and "16:9" in p  # リップシンク構図
+    # 構図はコードで持たない。付くのは破綻回避の下限だけ（test_character_expression.py 参照）
+    assert "bust-up" not in p
+    assert "mouth must be fully visible" in p and "16:9" in p
 
 
 def test_aivis_default_style():
@@ -304,3 +306,75 @@ def test_a_timestamp_in_the_intro_is_caught_by_the_checker():
 
     text = build_description(_edl(), agenda="テーマ", intro="前置き\n00:00 章のつもりではない行")
     assert chapter_problems(text)
+
+
+# ── イントロ合成: ジングル無しの経路（2026-08-08 実際に落ちた）────────────────
+def _capture_intro_cmd(monkeypatch, tmp_path, *, jingle=None):
+    from wwedit.publish import intro_compose as ic
+
+    seen: dict = {}
+
+    def fake_run(cmd, **_kw):
+        seen["cmd"] = list(cmd)
+
+        class R:
+            returncode = 0
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(ic, "_duration", lambda _p: 8.0)
+    monkeypatch.setattr(ic, "_badge", lambda *_a, **_k: tmp_path / "badge.png")
+    monkeypatch.setattr(ic.subprocess, "run", fake_run)
+    (tmp_path / "in.mp4").write_bytes(b"x")
+    ic.compose_intro(tmp_path / "in.mp4", "ノアです。", tmp_path / "out.mp4",
+                     jingle=jingle)
+    return seen["cmd"]
+
+
+def test_intro_without_jingle_maps_the_raw_audio_stream(monkeypatch, tmp_path):
+    """🚨 ``-map [0:a]`` は**フィルタ出力ラベル**の意味になり ffmpeg が落ちる。
+
+    2026-08-08 実害: ジングル無しでイントロを作ろうとして
+    「Output with label '0:a' does not exist」で失敗した（ジングル有りの経路しか
+    通っていなかったので気づけていなかった）。素の入力は角括弧を付けない。
+    """
+    cmd = _capture_intro_cmd(monkeypatch, tmp_path)
+    assert "[0:a]" not in cmd
+    assert cmd[cmd.index("-map", cmd.index("-map") + 1) + 1] == "0:a"
+
+
+def test_intro_with_jingle_still_maps_the_mixed_label(monkeypatch, tmp_path):
+    (tmp_path / "jg.wav").write_bytes(b"x")
+    cmd = _capture_intro_cmd(monkeypatch, tmp_path, jingle=tmp_path / "jg.wav")
+    assert cmd[cmd.index("-map", cmd.index("-map") + 1) + 1] == "[aout]"
+    assert "amix=inputs=2" in cmd[cmd.index("-filter_complex") + 1]
+
+
+# ── 声のライセンス表記（CC-BY 等は概要欄への表示が義務）────────────────────
+def test_voice_credit_for_borrowed_voice():
+    """🚨 借りた声のクレジットを落とさない（2026-08-08 指摘・投稿後に発覚）。"""
+    from wwedit.publish.character import voice_credits
+
+    got = voice_credits(["souta", "noa"])
+    assert len(got) == 1                       # noa は自前素材＝出さない
+    label, url = got[0]
+    assert "松風" in label and "CC-BY-4.0" in label and "月島颯太" in label
+    assert url == "https://twitter.com/mochi_jin_voice"
+
+
+def test_voice_credit_dedupes_and_skips_unknown():
+    from wwedit.publish.character import voice_credits
+
+    assert voice_credits(["souta", "souta"]) == voice_credits(["souta"])
+    assert voice_credits(["unknown_char", ""]) == []
+
+
+def test_description_renders_credit_as_a_link_block():
+    """クレジットは既存の links ブロック（ラベル→URL）に載る＝独自フォーマットを作らない。"""
+    from wwedit.publish.character import voice_credits
+
+    edl = _edl()
+    text = build_description(edl, agenda="テーマ", links=voice_credits(["souta"]),
+                             hashtags="#動画編集")
+    assert "月島颯太 (松風音声読み上げデータ / 松風 / CC-BY-4.0)\nhttps://twitter.com/mochi_jin_voice" in text
+    assert text.index("Agenda") < text.index("松風") < text.index("#動画編集")
