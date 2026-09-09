@@ -36,7 +36,8 @@ _DEFAULTS = {
 }
 
 #: のべつべ！キャラのうち参照音声があるもの（`mossan_hoshi` は実在の人なので除く）。
-QWEN_VOICES = ["noa", "yume", "kasumi", "priya", "reika", "ritsu", "suzu", "tsukasa"]
+QWEN_VOICES = ["noa", "yume", "kasumi", "priya", "reika", "ritsu", "suzu", "tsukasa",
+               "souta"]
 
 
 def _cfg(key: str) -> str:
@@ -60,6 +61,11 @@ def synth_batch(jobs: list[dict], *, sim_tries: int = 3,
     """``[{"text","out","char",...}]`` を**1プロセスでまとめて合成**し、実尺(秒)を返す。
 
     ``char`` は `refs/<char>/` のID。``ref`` 未指定/不在ならそのキャラの先頭セットに落ちる。
+
+    ``ref_files=[{"wav","text"}, …]`` を渡すと **`refs/` を使わず任意の音声を参照**にする
+    （app の「ファイルから読み込む」経路）。コーパスの話者を参照にしたいときに使う。
+    同一性判定は ``sim_refs``（wav パスの list・省略時は ``ref_files`` の wav）で行う。
+    引き直しは seed を変え、2回ごとに次の ``ref_files`` 要素へ移る。
 
     **参照音声と別人になったらシードを変えて引き直す**（``sim_tries`` 回まで・最良を採用）。
     引き直しは別プロセス側の合成ループの中でやる（モデル読み込み約280秒を再度払わないため）。

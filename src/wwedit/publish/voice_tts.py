@@ -47,6 +47,7 @@ __all__ = [
     "TERMS_NAME", "SUB_LINE_CHARS", "MIN_SUB_DUR", "TURN_GAP_S", "CLIP_GAP",
     "SEC_PER_CHAR", "reading_rows",
     "eligible_utterances", "tts_units", "kept_text", "write_tts_input",
+    "stale_turns", "realign_decisions", "kept_char_times", "anchor_clips",
     "load_decisions", "load_terms", "apply_terms",
     "fit_plan", "schedule_clips", "out_to_sigma_segments",
     "place_clip", "wav_duration", "wrap_two_lines", "subtitles_from_reading",
@@ -317,6 +318,113 @@ def write_tts_input(edl: Edl, out_tsv: Path) -> int:
     out_tsv.parent.mkdir(parents=True, exist_ok=True)
     out_tsv.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return len(units)
+
+
+def stale_turns(units: list[dict], tsv_path: Path) -> list[int]:
+    """**台本が古くなったターン**の uid を返す（`voice_tts_input.tsv` と突き合わせ）。
+
+    台本は prepare 時点の原文から書かれるので、そのあと **G2 でカットを直すと
+    idx の指す中身だけが変わる**。決定JSONは古いままなので、**切ったはずの発言が
+    そのまま読み上げられる**（2026-08-06 に実際に起きた・`docs/STATUS.md` §21.10）。
+    """
+    from wwedit.common.staleness import stale_against_tsv
+
+    return stale_against_tsv(
+        tsv_path, {int(u["uid"]): " ".join((u["text"] or "").split()) for u in units})
+
+
+def realign_decisions(units: list[dict], decisions: dict[int, str], tsv_path: Path,
+                      *, keep: bool = False) -> tuple[dict[int, str], list[int], int]:
+    """台本を**いまのターン番号へ貼り直す**（`(decisions, 対応が付かないuid, 貼り直した件数)`）。
+
+    G2 でカットを直すとターンが増減し、**そこから後ろの番号が全部繰り上がる**。
+    決定JSONは idx キーなので、そのまま使うと**隣の発話の文を喋る**。2026-08-06 の回は
+    214→197 ターンで、食い違った133件のうち110件が「同じ文が別番号に居るだけ」だった。
+
+    なので**落とす前に貼り直す**。対応が付かなかったターンは決定から**外す**——
+    無音にはしない。キーが無いターンは `tts_clips` が**いまの kept 文字起こし**で読み上げる。
+    それはカット後に実際に残っている語だけで出来ているので、**切った内容は原理的に入らない**し
+    間も空かない。`keep=True`（CLI の `--keep-stale`）で貼り直しを止められる。
+    """
+    from wwedit.common.staleness import prepared_texts, realign
+
+    prepared = prepared_texts(tsv_path)
+    if keep or not prepared:
+        return decisions, [], 0
+    current = {int(u["uid"]): " ".join((u["text"] or "").split()) for u in units}
+    m = realign(prepared, current)
+    out = {uid: decisions[m[uid]] for uid in current if m.get(uid) in decisions}
+    lost = [uid for uid in sorted(current) if uid not in out]
+    moved = sum(1 for uid in out if m[uid] != uid)
+    return out, lost, moved
+
+
+
+#: 本文照合でアンカーを探すときに先読みする文字数。台本が何ターンぶんも吸収していると
+#: 「その文の出どころ」は先の方にあるので、ターンの外まで見る必要がある。
+ANCHOR_WINDOW = 3000
+#: これ未満しか一致しなかったら「見つからなかった」扱い（前後から補間する）。
+ANCHOR_MIN_MATCH = 6
+
+
+def kept_char_times(edl: Edl) -> tuple[str, list[float]]:
+    """kept な発話を**1本の文字列**にし、各文字の素材秒を返す（時刻順・句読点は除く）。
+
+    アンカー探索の土台。話者をまたいで時刻順に並べる（会話の流れそのもの）。
+    """
+    mic = {t.speaker for t in edl.source.audio_tracks if not t.is_desktop_audio}
+    ranges = edl.kept_ranges()
+    items: list[tuple[float, str]] = []
+    for u in edl.utterances:
+        if u.speaker not in mic:
+            continue
+        for w in (u.words or []):
+            core = "".join(c for c in (w.text or "") if c not in PUNCT_CHARS)
+            if not core:
+                continue
+            if not any(r.start <= (w.start + w.end) / 2 <= r.end for r in ranges):
+                continue
+            for ch in core:
+                items.append((w.start, ch))
+    items.sort(key=lambda x: x[0])
+    return "".join(c for _t, c in items), [t for t, _c in items]
+
+
+def anchor_clips(edl: Edl, clips: list[dict], *, window: int = ANCHOR_WINDOW,
+                 min_match: int = ANCHOR_MIN_MATCH) -> dict[int, tuple[float, float]]:
+    """各クリップ（＝1文）の **src アンカー区間**を、本文照合で決める。
+
+    **ターンの区間を按分するだけでは足りない。** 台本は相槌を空にして中身を先頭ターンへ
+    吸収することがあり、そうなるとターン自身の区間（数秒）に何分ぶんもの文が潰れて、
+    **映像だけが先へ進む**（2026-08-07 実測: 中央62秒・最大196秒ずれ）。
+    文の内容が**元の文字起こしのどこにあるか**を探せば、吸収されていても正しく散る。
+
+    対応は**単調**（クリップは時刻順に読まれるので、アンカーも戻らない）。
+    見つからなかったクリップは入れない（呼び手が前後から補間する）。
+    """
+    from difflib import SequenceMatcher
+
+    text, times = kept_char_times(edl)
+    out: dict[int, tuple[float, float]] = {}
+    if not text:
+        return out
+    pos = 0
+    for i, c in enumerate(clips):
+        q = "".join(ch for ch in (c.get("text") or "") if ch not in PUNCT_CHARS and not ch.isspace())
+        if len(q) < min_match:
+            continue
+        hi = min(len(text), pos + window)
+        seg = text[pos:hi]
+        if not seg:
+            break
+        m = SequenceMatcher(None, seg, q, autojunk=False).find_longest_match(0, len(seg), 0, len(q))
+        if m.size < min_match:
+            continue
+        a = pos + m.a
+        b = min(len(times) - 1, a + max(m.size, len(q)) - 1)
+        out[i] = (times[a], times[max(a, b)])
+        pos = a + m.size
+    return out
 
 
 def load_decisions(path: Path, *, names: dict[str, str] | None = None) -> dict[int, str]:
