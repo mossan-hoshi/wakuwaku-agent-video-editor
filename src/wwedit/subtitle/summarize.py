@@ -12,11 +12,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 from wwedit.edl.schema import Edl, Subtitle, SubtitleStyle, TimeRange
 
-__all__ = ["build_caption_windows", "write_caption_input", "apply_captions"]
+__all__ = ["build_caption_windows", "write_caption_input", "caption_remap",
+           "apply_captions"]
 
 
 def _mmss(t: float) -> str:
@@ -105,6 +107,24 @@ def write_caption_input(edl: Edl, out_path: str | Path, *, window_s: float = 12.
     return out_path
 
 
+def caption_remap(edl: Edl, tsv_path: str | Path, *, window_s: float = 12.0) -> dict[int, int]:
+    """``{要約を書いたときの窓idx: いまの窓idx}``。対応が無い窓は入らない。
+
+    窓は idx だけがキーなので、**要約を作ったあとにカットを直すと窓が増減して番号がずれる**。
+    そのまま使うと隣の話の要約が出る（読み上げ台本とまったく同じ穴・`docs/STATUS.md` §21.10）。
+    `caption_input.tsv` に残っている原文と本文で照合して**貼り直す**。
+    TSV が無ければ空 dict＝「照合できない」を返す（呼び手はそのまま使う）。
+    """
+    from wwedit.common.staleness import prepared_texts, realign
+
+    prepared = prepared_texts(tsv_path)
+    if not prepared:
+        return {}
+    wins = build_caption_windows(edl, window_s=window_s)
+    cur = {int(w["idx"]): " ".join(w["text"].split()) for w in wins}
+    return {p: c for c, p in realign(prepared, cur).items()}
+
+
 DISCLAIMER_TEXT = "【注意】本編字幕はAI作成のため用語・内容間違いありえます🫠"
 
 
@@ -117,12 +137,16 @@ def apply_captions(
     window_s: float = 12.0,
     disclaimer: str | None = DISCLAIMER_TEXT,
     disclaimer_s: float = 6.0,
+    remap: Mapping[int, int] | None = None,
 ) -> Edl:
     """LLM の要約字幕決定（``{"captions":[{"utt":<窓idx>,"text":str}]}``）を EDL.subtitles へ。
 
     各字幕は対応**窓（発話チャンク）の [開始, 終了] 全体**を表示区間にする（ソース時刻）。
     発話の終わりまで字幕を出す＝早く消えない。compose 側で出力タイムラインへ再マップ。次字幕の
     開始は越えない（重なり防止）。話者は窓の多数決（色分け用）。
+
+    ``remap``（`caption_remap` の結果）を渡すと、決定JSONの ``utt`` を**いまの窓番号へ
+    貼り直す**。対応が無い窓＝カットで消えた話なので、その要約は捨てる。
     """
     from wwedit.privacy.masking import apply_name_replacements, load_name_replacements
 
@@ -132,6 +156,8 @@ def apply_captions(
     items: list[tuple[float, float, str, str | None]] = []  # (start, win_end, text, speaker)
     for c in dec.get("captions", []):
         idx = int(c.get("utt", -1))
+        if remap is not None:
+            idx = remap.get(idx, -1)
         text = apply_name_replacements(str(c.get("text", "")).strip(), name_map)
         if 0 <= idx < len(wins) and text:
             w = wins[idx]

@@ -311,6 +311,12 @@ class ChibiConfig(BaseModel):
         default_factory=lambda: ["left"],
         description="左右反転する側。2体を対面させるため既定で left を反転する",
     )
+    # [E] 感情が切り替わった瞬間に出す漫符（全キャラ共通・PIL 描画・無課金）
+    fx_enabled: bool = Field(True, description="感情切替エフェクトを出すか")
+    fx_scale_frac: float = Field(0.35, description="エフェクト辺長 / ちび表示高さ")
+    fx_offset_x_frac: float = Field(0.62, description="ちび箱の内側方向オフセット比")
+    fx_offset_y_frac: float = Field(1.02, description="ちび箱の上辺からの持ち上げ比")
+    fx_duration_s: float = Field(0.0, description="0=既定(0.75秒)。1回の表示尺")
 
 
 class InfographicConfig(BaseModel):
@@ -325,7 +331,7 @@ class InfographicConfig(BaseModel):
     enabled: bool = True
     path: str = Field("", description="生成済み横長PNGの絶対パス。空=表示しない")
     start_s: float = Field(0.0, description="本編出力タイムライン上の表示開始秒")
-    duration_s: float = Field(10.0, description="表示秒数")
+    duration_s: float = Field(15.0, description="表示秒数")
     fade_s: float = Field(0.4, description="表示前後のフェード秒（0=カットイン）")
     top_reserve_px: int = Field(
         78, description="上部に空ける高さ(px・1080p基準)。チャプターリボン54px＋余白",
@@ -345,6 +351,12 @@ class PostUnit(BaseModel):
         default_factory=list, description="この投稿に含めるソース区間（無効区間除外後）"
     )
     chapter_ids: list[int] = Field(default_factory=list)
+    infographic: InfographicConfig | None = Field(
+        None,
+        description="[I] この投稿単位**専用**の要約図解。1収録を前後半に割ると話題が別なので、"
+                    "収録まるごとの `Edl.infographic` を両方に出すと後半が嘘になる。"
+                    "compose は post_unit_index の単位にこれがあれば優先して使う。",
+    )
 
 
 class Edl(BaseModel):

@@ -149,10 +149,16 @@ def test_scan_ng_mosaics_no_terms_skips_ocr_entirely() -> None:
 
 
 def test_scan_ng_mosaics_reuses_cache_without_reinference(tmp_path) -> None:
-    from wwedit.ocr.screen_scan import save_cache
+    from wwedit.ocr.screen_scan import sample_times, save_cache
 
     cache = tmp_path / "screen_ocr.json"
-    save_cache(cache, [FrameOcr(time_s=30.0, boxes=[_Box("秘密", (800, 400, 1100, 440))])])
+    # キャッシュの照合は**時刻ごと**（欠けた時刻だけ引き直す＝途中で落ちても続きから）。
+    # 再推論ゼロを見たいので、サンプルする全時刻を埋めておく。
+    edl = _edl()
+    save_cache(cache, [
+        FrameOcr(time_s=t, boxes=[_Box("秘密", (800, 400, 1100, 440))] if t == 30.0 else [])
+        for t in sample_times(edl)
+    ])
     called = []
 
     def ocr(_img):
@@ -160,7 +166,7 @@ def test_scan_ng_mosaics_reuses_cache_without_reinference(tmp_path) -> None:
         return []
 
     ovs = scan_ng_mosaics(
-        _edl(), cache_path=cache, terms=["秘密"], ocr_fn=ocr, extract_fn=lambda *a: True
+        edl, cache_path=cache, terms=["秘密"], ocr_fn=ocr, extract_fn=lambda *a: True
     )
     assert len(ovs) == 1
     assert not called  # キャッシュ再利用＝推論を回さない
