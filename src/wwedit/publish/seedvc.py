@@ -22,7 +22,8 @@ from pathlib import Path
 
 from wwedit.common.env import env_value
 
-__all__ = ["build_char_ref", "convert_batch", "plan_ref_concat", "shared_ref_dir"]
+__all__ = ["build_char_ref", "convert_batch", "plan_ref_concat", "rotate_to_set",
+           "shared_ref_dir"]
 
 _DEFAULTS = {
     "WWEDIT_SEEDVC_DIR": r"D:\Users\sackn\repos\seed-vc-2025",
@@ -59,14 +60,33 @@ def plan_ref_concat(durations: list[float], target: float = REF_TARGET_SEC) -> i
     return len(durations)
 
 
-def build_char_ref(char: str, *, cache_dir: Path | None = None, force: bool = False) -> Path:
+def rotate_to_set(sets: list[dict], start_set: str | None) -> list[dict]:
+    """``start_set`` が先頭に来るように回す（純関数・テスト用）。
+
+    Seed-VC は参照の**先頭25秒しか見ない**ので、先頭に置いたセットがそのまま声の基準になる。
+    捨てずに回すのは、指定セットが短いときに後続で25秒を埋めるため。
+    見つからなければ元の順のまま返す（呼び出し側が警告する）。
+    """
+    if not start_set:
+        return sets
+    idx = next((i for i, s in enumerate(sets) if s.get("name") == start_set), None)
+    return sets if idx is None else sets[idx:] + sets[:idx]
+
+
+def build_char_ref(char: str, *, cache_dir: Path | None = None, force: bool = False,
+                   start_set: str | None = None) -> Path:
     """キャラの参照音源 wav（~24秒・44.1k mono）を構築する（キャッシュ済みなら再利用）。
 
     happy-collapse-maker ``refs/<char>/refs.json`` のセット順に wav を連結し、
     ``silenceremove`` で**先頭の無音だけ**除去する（Seed-VC は参照の先頭25秒しか見ない）。
+
+    ``start_set`` を指定すると**そのセットを先頭にして**連結する（どのセットを声の基準に
+    するかは回ごとの判断なので、ここに固定値を書かない。EDL の
+    ``meta.voice.ref_sets`` が持ち、``publish voice-cast --ref-set`` で決める）。
+    キャッシュ名にもセット名が入るので、指定を変えれば別ファイルになる。
     """
     cache = cache_dir or shared_ref_dir()
-    out = cache / f"{char}_ref.wav"
+    out = cache / (f"{char}_ref.wav" if not start_set else f"{char}_ref_{start_set}.wav")
     if out.exists() and not force:
         return out
 
@@ -75,6 +95,11 @@ def build_char_ref(char: str, *, cache_dir: Path | None = None, force: bool = Fa
     if not refs_json.exists():
         raise FileNotFoundError(f"参照セットが無いキャラ: {char}（{refs_json}）")
     sets = json.loads(refs_json.read_text(encoding="utf-8"))
+    if start_set and not any(s.get("name") == start_set for s in sets):
+        raise ValueError(
+            f"参照セットが無い: {char}/{start_set}"
+            f"（あるのは {', '.join(s.get('name', '?') for s in sets)}）")
+    sets = rotate_to_set(sets, start_set)
     wavs = [(refs_json.parent / s["wav"], float(s.get("duration_sec", 0.0))) for s in sets]
     wavs = [(p, d) for p, d in wavs if p.exists()]
     if not wavs:

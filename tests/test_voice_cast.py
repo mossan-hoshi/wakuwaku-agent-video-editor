@@ -96,3 +96,34 @@ def test_revert_voice_restores_everything():
 
 def test_revert_voice_noop_when_not_cast():
     assert revert_voice(_edl()) == []
+
+
+def test_ref_set_is_recorded_on_the_edl_not_hardcoded():
+    """どの参照セットを声の基準にするかは**回ごとの判断**なので EDL が持つ。
+
+    コードに `{"noa": "set5"}` のような既定値を置くと、次の回で違うセットを使いたく
+    なったときにコードを触ることになる（2026-08-06・「あくまで今回の動画の条件」）。
+    方式A（Seed-VC）と方式B（Qwen3-TTS）で**同じ指定**が効くことも保証する。
+    """
+    edl = _edl()
+    apply_cast(edl, {"Taniguchi": "noa", "mossan-hoshi": "souta"}, method="seedvc",
+               ref_sets={"noa": "set5"})
+    assert edl.meta["voice"]["ref_sets"] == {"noa": "set5"}
+
+    # キャストに居ないキャラの指定は取り違えなので弾く
+    with pytest.raises(ValueError, match="キャストに居ない"):
+        apply_cast(edl, {"Taniguchi": "noa"}, method="seedvc", ref_sets={"yume": "set1"})
+
+
+def test_rotate_to_set_puts_the_named_set_first():
+    """Seed-VC は参照の先頭25秒しか見ない＝先頭に置いたセットが声の基準になる。
+
+    捨てずに回すのは、指定セットが短いときに後続で25秒を埋めるため。
+    """
+    from wwedit.publish.seedvc import rotate_to_set
+
+    sets = [{"name": f"set{i}"} for i in range(1, 5)]
+    assert [s["name"] for s in rotate_to_set(sets, "set3")] == \
+        ["set3", "set4", "set1", "set2"]
+    assert rotate_to_set(sets, None) == sets
+    assert rotate_to_set(sets, "nope") == sets      # 判定は build_char_ref 側

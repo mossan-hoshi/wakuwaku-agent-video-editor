@@ -62,11 +62,17 @@ def pick_cast(
     return dict(zip(speakers, picked, strict=True))
 
 
-def apply_cast(edl: Edl, cast: dict[str, str], *, method: str) -> None:
+def apply_cast(edl: Edl, cast: dict[str, str], *, method: str,
+               ref_sets: dict[str, str] | None = None) -> None:
     """割当を EDL へ一括で書き込む（character_cast / 字幕色 / chibi有効化 / meta.voice）。
 
     初回のみ元の字幕色設定を ``meta["voice"]["prev_colors"]`` に退避する
     （再キャストしても最初のスナップショットを保持＝revert で完全に戻せる）。
+
+    ``ref_sets`` は ``{キャラid: 参照セット名}``。**どのセットの声を基準にするかは
+    回ごとの判断**なのでコードに固定値を置かず、ここ（EDL）に持たせる。方式A（Seed-VC）は
+    ``build_char_ref(start_set=…)``、方式B（Qwen3-TTS）はジョブの ``ref`` に効く＝
+    **A と B で同じ声**になる。未指定のキャラはそのキャラの先頭セット。
     """
     if method not in VOICE_METHODS:
         raise ValueError(f"method は {'/'.join(VOICE_METHODS)} のいずれか: {method!r}")
@@ -75,6 +81,11 @@ def apply_cast(edl: Edl, cast: dict[str, str], *, method: str) -> None:
         meta_voice["prev_colors"] = dict(edl.subtitle_speaker_colors or {})
     meta_voice["method"] = method
     meta_voice["confirmed_at"] = datetime.now().isoformat(timespec="seconds")
+    if ref_sets:
+        unknown = sorted(set(ref_sets) - set(cast.values()))
+        if unknown:
+            raise ValueError(f"キャストに居ないキャラの参照セット指定: {', '.join(unknown)}")
+        meta_voice["ref_sets"] = dict(ref_sets)
     edl.meta["voice"] = meta_voice
 
     edl.character_cast = dict(cast)

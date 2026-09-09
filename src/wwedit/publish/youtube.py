@@ -106,6 +106,9 @@ def _oauth_credentials():
         scopes=[
             "https://www.googleapis.com/auth/youtube.upload",
             "https://www.googleapis.com/auth/youtube.readonly",
+            # 投稿**後**に直すのに要る（videos.update / thumbnails.set）。
+            # 無いと 403「Insufficient Permission」。付与は scripts/reauth_youtube.py。
+            "https://www.googleapis.com/auth/youtube.force-ssl",
         ],
     )
 
