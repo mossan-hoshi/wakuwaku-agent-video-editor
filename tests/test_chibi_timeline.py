@@ -221,3 +221,78 @@ def test_emotion_track_from_report_anchors_on_clip_start():
     assert track[0] == (0.0, pytest.approx(10.0), "normal")
     assert track[1] == (pytest.approx(10.0), pytest.approx(12.5), "surprised")
     assert track[-1][2] == "normal" and track[-1][1] == pytest.approx(30.0)
+
+
+# ── 瞬き（口パクと直交・後段適用）──────────────────────────
+
+def test_blink_times_are_deterministic_and_snapped():
+    """同じ話者なら**毎回同じ**。⚠️ 組み込み hash() を使うとプロセス毎に変わる。"""
+    from wwedit.chibi.timeline import BLINK_MIN_FRAMES, blink_times
+
+    a = blink_times(300.0, speaker="A")
+    assert a == blink_times(300.0, speaker="A")
+    assert a != blink_times(300.0, speaker="B")      # 左右で位相がずれる
+    # 1/30 グリッドへスナップされ、最低フレーム数を満たす
+    for s, e in a:
+        assert abs(round(s * 30) - s * 30) < 1e-6
+        assert e - s >= BLINK_MIN_FRAMES / 30 - 1e-9
+    # 間隔はヒトの瞬き相当（3〜6秒あたりに収まる）
+    gaps = [a[i + 1][0] - a[i][1] for i in range(len(a) - 1)]
+    mid = sorted(gaps)[len(gaps) // 2]
+    assert 2.0 < mid < 7.0
+
+
+def test_blink_times_deterministic_across_processes():
+    """別プロセスでも一致すること（PYTHONHASHSEED の影響を受けない）。"""
+    import os
+    import subprocess
+    import sys
+
+    code = ("from wwedit.chibi.timeline import blink_times;"
+            "print(round(blink_times(60.0, speaker='A')[0][0], 5))")
+    outs = set()
+    for seed in ("0", "12345"):
+        env = dict(os.environ, PYTHONHASHSEED=seed)
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                           env=env, check=True)
+        outs.add(r.stdout.strip())
+    assert len(outs) == 1
+
+
+def test_apply_blink_preserves_coverage_and_respects_blinkable():
+    from wwedit.chibi.timeline import SpriteInterval, apply_blink
+
+    ivs = [SpriteInterval(0.0, 10.0, "normal", 0),
+           SpriteInterval(10.0, 20.0, "surprised", 1)]
+    out = apply_blink(ivs, [(2.0, 2.2), (12.0, 12.2)],
+                      blinkable={"normal", "troubled", "angry", "thinking"})
+    assert out[0].start == 0.0 and out[-1].end == pytest.approx(20.0)
+    assert all(abs(a.end - b.start) < 1e-9 for a, b in zip(out, out[1:], strict=False))
+    assert sum(i.end - i.start for i in out) == pytest.approx(20.0)
+    # blinkable の感情だけ eye=1 が立ち、surprised は見開いたまま
+    assert any(i.eye == 1 and i.emotion == "normal" for i in out)
+    assert not any(i.eye for i in out if i.emotion == "surprised")
+    # 口の状態は瞬きで変わらない（直交）
+    assert {i.mouth for i in out if i.emotion == "normal"} == {0}
+
+
+def test_apply_blink_merges_adjacent_same_sprites():
+    from wwedit.chibi.timeline import SpriteInterval, apply_blink
+
+    ivs = [SpriteInterval(0.0, 1.0, "normal", 0), SpriteInterval(1.0, 2.0, "normal", 0)]
+    out = apply_blink(ivs, [], blinkable={"normal"})
+    assert len(out) == 1 and out[0].start == 0.0 and out[0].end == pytest.approx(2.0)
+
+
+def test_write_ffconcat_falls_back_when_blink_assets_missing(tmp_path, monkeypatch):
+    """``m*_e1.png`` が無い感情は eye=0 へ落ちる（瞬き素材ゼロでも従来どおり動く）。"""
+    from wwedit.chibi.timeline import SpriteInterval, write_ffconcat
+
+    monkeypatch.setenv("WWEDIT_CHIBI_ASSETS", str(tmp_path))
+    ivs = [SpriteInterval(0.0, 1.0, "normal", 0, 1)]
+    p = write_ffconcat(ivs, "noa", tmp_path / "a.ffconcat",
+                       available_emotions={"normal"}, blink_emotions=set())
+    assert "mouth_closed.png" in p.read_text(encoding="utf-8")
+    p2 = write_ffconcat(ivs, "noa", tmp_path / "b.ffconcat",
+                        available_emotions={"normal"}, blink_emotions={"normal"})
+    assert "m0_e1.png" in p2.read_text(encoding="utf-8")
