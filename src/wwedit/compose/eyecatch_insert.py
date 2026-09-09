@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 
 from wwedit.common.media import ffmpeg_error, ffmpeg_path
-from wwedit.compose.ffmpeg_compose import _src_to_out, out_total
+from wwedit.compose.ffmpeg_compose import _src_to_out, out_total, video_encode_args
 from wwedit.edl.schema import Edl, TimeRange
 
 __all__ = [
@@ -93,26 +93,6 @@ def _pick_jingle(jingle_dir: Path, seed: int) -> Path | None:
     return random.Random(seed).choice(cands) if cands else None
 
 
-def _synth_voices(work: Path, seeds: dict[int, int]) -> dict[int, tuple[Path, str]]:
-    """全章ぶんの一言を**まとめて**合成する。失敗したら ``{}``（音楽へフォールバック）。
-
-    Qwen3-TTS はモデル読み込みが重いので、章ごとに合成せず1回で全部作る。
-    """
-    from wwedit.publish.character import full_name
-    from wwedit.publish.eyecatch_voice import synth_eyecatch_voices
-
-    try:
-        made = synth_eyecatch_voices(seeds, work)
-    except Exception as e:  # 推論環境が無いなど。アイキャッチ自体は出す。
-        print(f"  [warn] アイキャッチ音声の合成に失敗（音楽へ退避）: {e}")
-        return {}
-    out: dict[int, tuple[Path, str]] = {}
-    for i, (wav, char, disp) in sorted(made.items()):
-        print(f"  アイキャッチ音声[章{i}]: {full_name(char)}「{disp}」")
-        out[i] = (wav, full_name(char))
-    return out
-
-
 def insert_eyecatches(
     main_mp4: str | Path,
     edl: Edl,
@@ -120,7 +100,6 @@ def insert_eyecatches(
     *,
     ranges: list[TimeRange] | None = None,
     jingle_dir: str | Path | None = None,
-    voice: bool = True,
     duration: float = 2.0,
     seed_base: int = 0,
     out_w: int = 1920,
@@ -135,9 +114,8 @@ def insert_eyecatches(
     本編を境界で trim 分割して concat フィルタで再連結。fps/音声フォーマットを揃えて全体を
     1回再エンコードする（クリップ間のドリフト無し）。
 
-    **音は既定でのべつべ！キャラの一言ボイス**（``voice=True``・章ごとにキャラと台詞が変わり、
-    右上にロゴ＋キャラ名が出る）。SBV2サーバが無いなど合成に失敗したら ``jingle_dir`` の
-    音楽へフォールバックする（アイキャッチ自体は必ず出す）。
+    **音は ``jingle_dir`` を渡したときだけ**（章ごとに seed で選曲）。渡さなければ無音。
+    キャラの一言読み上げは 2026-09-08 に廃止した（読み上げの質が安定しないため機能ごと削除）。
     返り値 ``(out_path, chapter_lines)``（chapter_lines=補正済み概要欄用）。
     """
     from wwedit.publish.eyecatch import generate_eyecatch
@@ -162,20 +140,14 @@ def insert_eyecatches(
     # アイキャッチ生成（対象章のみ）。ffmpeg入力番号 = 生成順に 1..M（0=本編）
     cmd = [ffmpeg_path(), "-y", "-i", str(main_mp4)]
     ec_input_of: dict[int, int] = {}
-    made_voices: dict[int, tuple[Path, str]] = {}
-    if voice:
-        made_voices = _synth_voices(work, {i: seed_base + i for i in ec_chapters})
     for n_ec, i in enumerate(ec_chapters):
         b = bounds[i]
         seed = seed_base + i
-        vwav, vname = made_voices.get(i, (None, ""))
-        jingle = None
-        if vwav is None and jdir and jdir.exists():
-            jingle = _pick_jingle(jdir, seed)
+        # 音は jingle_dir を渡したときだけ。キャラの一言読み上げは廃止（2026-09-08）。
+        jingle = _pick_jingle(jdir, seed) if jdir and jdir.exists() else None
         ec = generate_eyecatch(
             b["title"], work / f"ec_{i:02d}.mp4",
             seed=seed, jingle=str(jingle) if jingle else None,
-            voice=str(vwav) if vwav else None, voice_name=vname,
             duration=duration, out_w=out_w, out_h=out_h, fps=fps,
         )
         cmd += ["-i", str(ec)]
@@ -207,7 +179,7 @@ def insert_eyecatches(
     cmd += [
         "-filter_complex_script", str(sp),
         "-map", "[outv]", "-map", "[outa]",
-        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        *video_encode_args(None, crf, preset),
         "-c:a", "aac", "-b:a", "192k", str(out_path),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True,
