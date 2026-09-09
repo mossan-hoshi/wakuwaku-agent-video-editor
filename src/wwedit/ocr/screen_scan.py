@@ -95,10 +95,14 @@ def scan_screen_ocr(
     ocr_fn=None,
     extract_fn=None,
     progress_fn=None,
+    on_frame=None,
 ) -> list[FrameOcr]:
     """代表フレームをフル画面OCRして返す（**重い推論はここ1箇所だけ**）。
 
     ``ocr_fn(png)->boxes`` / ``extract_fn(video, t, png)->bool`` を注入すればGPU/IO無しでテスト可。
+
+    ``on_frame(FrameOcr)`` を渡すと**1枚OCRするたびに**呼ばれる。呼び出し側はこれで
+    途中経過を保存できる（:func:`ensure_screen_ocr` が使う）。
     """
     if ocr_fn is None:
         from wwedit.ocr.engine import run_ocr
@@ -119,7 +123,10 @@ def scan_screen_ocr(
             progress_fn(i, len(ts))
         if not extract_fn(video, t, png):
             continue
-        out.append(FrameOcr(time_s=t, boxes=list(ocr_fn(png))))
+        frame = FrameOcr(time_s=t, boxes=list(ocr_fn(png)))
+        out.append(frame)
+        if on_frame is not None:
+            on_frame(frame)
     return out
 
 
@@ -159,11 +166,26 @@ def ensure_screen_ocr(
     video_path: str | Path | None = None,
     **scan_kwargs,
 ) -> list[FrameOcr]:
-    """キャッシュがあれば読み、無ければOCRして保存する（**推論は一度きり**）。"""
+    """キャッシュを読み、**足りないフレームだけ**OCRして都度保存する（推論は一度きり）。
+
+    ⚠️ **1フレームごとに書く**。165フレームのOCRは数分かかり、RAM不足で無言終了したことが
+    ある（2026-08-07・空きRAM 3GB で 100/165 フレーム目に落ちた）。まとめ書きだと落ちる
+    たびに全部やり直しになるので、再実行が**続きから**になるようにしてある。
+    """
+    done: dict[float, FrameOcr] = {}
     if not refresh:
-        cached = load_cache(cache_path)
-        if cached:
-            return cached
-    frames = scan_screen_ocr(edl, video_path, **scan_kwargs)
-    save_cache(cache_path, frames, video=str(video_path or edl.source.video_path))
-    return frames
+        done = {round(f.time_s, 3): f for f in load_cache(cache_path)}
+
+    times = scan_kwargs.pop("times", None)
+    if times is None:
+        times = sample_times(edl, max_span=scan_kwargs.get("max_span", DEFAULT_MAX_SPAN))
+    todo = [t for t in times if round(t, 3) not in done]
+
+    video = str(video_path or edl.source.video_path)
+    if todo:
+        def _persist(frame: FrameOcr) -> None:
+            done[round(frame.time_s, 3)] = frame
+            save_cache(cache_path, [done[k] for k in sorted(done)], video=video)
+
+        scan_screen_ocr(edl, video_path, times=todo, on_frame=_persist, **scan_kwargs)
+    return [done[k] for k in sorted(done)]

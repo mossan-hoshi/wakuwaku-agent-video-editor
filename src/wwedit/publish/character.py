@@ -12,7 +12,7 @@ import glob
 from pathlib import Path
 
 from wwedit.common.env import env_value
-from wwedit.publish.thumbnail import generate_image, save_image
+from wwedit.publish.thumbnail import NANO_BANANA_2, generate_image, save_image
 
 # novtube の web/assets（キャラ素材の在処）。`WWEDIT_NOVTUBE_ASSETS` で差し替え可。
 # 他のキー同様 os.environ → .env の順で解決する（生の os.environ だと .env 設定が効かない）。
@@ -39,6 +39,32 @@ def full_name(char: str) -> str:
     return FULL_NAME.get(char, char.capitalize())
 
 
+# 🚨 **声を借りているキャラは概要欄にクレジットを出す**（2026-08-08 ユーザー指摘）。
+# 参照音声が CC-BY 等のライセンス素材なら、表示は**義務**であって任意ではない。
+# ``(ラベル, URL)`` で持ち、概要欄の links ブロック（ラベル→URL）へそのまま流す。
+# 自前データセット由来のキャラ（noa 等）はここに載せない＝出さないのが正しい。
+VOICE_CREDIT: dict[str, tuple[str, str]] = {
+    "souta": (
+        "月島颯太 (松風音声読み上げデータ / 松風 / CC-BY-4.0)",
+        "https://twitter.com/mochi_jin_voice",
+    ),
+}
+
+
+def voice_credits(chars) -> list[tuple[str, str]]:
+    """その動画に**声が入っている**キャラのクレジットを、重複なく登場順で返す。
+
+    未登録キャラは黙って飛ばす（自前素材＝表示不要）。新しく外部素材から声を作ったら
+    `VOICE_CREDIT` に足す——足し忘れるとライセンス違反になる。
+    """
+    out: list[tuple[str, str]] = []
+    for c in chars or ():
+        credit = VOICE_CREDIT.get((c or "").strip())
+        if credit and credit not in out:
+            out.append(credit)
+    return out
+
+
 # キャラ別の**素の表情**（novtube `web/docs/mascot.md` の設定が正）。
 # ⚠️ 全キャラ一律で「笑顔」にしない＝**キャラ崩れ**になる（2026-07-26 ユーザー指摘）。
 # 例: ゆめは「ボソボソ声でジト目」「眠そうなピンクの目」「人見知り」＝満面の笑みは設定違反。
@@ -61,6 +87,27 @@ def expression_of(char: str) -> str:
     """キャラの素の表情指示（mascot.md 準拠）。未登録は中立（勝手に笑顔にしない）。"""
     return EXPRESSION.get(char, _DEFAULT_EXPRESSION)
 
+# 開始フレームの解像度。**当たりは 0.5K で取り、通ったものだけ 2K で焼く**
+# （2026-09-09 ユーザー指示「0.5kであたりをつけてから2kで作れや」）。
+#
+# 🚨 **既定を FINAL_SIZE にしない。** 以前は `image_size="2K"` がベタ書きで、CLI から
+# 下げる口も無かったため、構図の当たりを取る1枚目まで最高解像度で焼いていた。
+# 開始フレームの行き先は DomoAI リップシンク＝**1280x720** なので、
+# 2K(2752x1536) は最終版でも過剰ぎみ。下見に至っては完全な無駄。
+#
+# 🚨 **公式ドキュメントの表記とエンドポイントの受理値が食い違う。**
+# ドキュメント（https://ai.google.dev/gemini-api/docs/image-generation）は
+# 「0.5K / 1K / 2K / 4K」と書いているが、実際に投げると 400 で拒否され、
+# エラー本文が正解を返す（2026-09-09 実測）:
+#
+#     Unsupported image_size '0.5K'.
+#     Supported values are: 1K, 2K, 4K, 512, 512P, 512PX.
+#
+# よって下見は **`512`**。ドキュメントを信じて `0.5K` に戻さないこと。
+# `gemini-3.1-flash-lite-image` は 1K のみ対応（こちらはドキュメントどおり）。
+DRAFT_SIZE = "512"
+FINAL_SIZE = "2K"
+
 # 参照画像に必ず付ける同一性維持の制約（先頭固定）。
 IDENTITY_CONSTRAINT = (
     "The reference image is the original character. STRICTLY maintain the EXACT same "
@@ -68,16 +115,36 @@ IDENTITY_CONSTRAINT = (
     "and proportions, same illustration style). Do NOT redesign the character. "
     "Generate a NEW portrait of the SAME character, changing ONLY the following: "
 )
-# リップシンク向けの構図（末尾固定）。**表情はキャラ別**（`EXPRESSION`）に差し込む。
-LIPSYNC_FRAMING = (
-    " Framing for lip-sync: upper body bust-up, facing camera nearly front (slight 3/4), "
-    "{expression}, mouth closed, face occupies at least 40% of the frame, "
-    "relatively clean background. 16:9 aspect. NO TEXT, no watermark."
+# 🚨 **構図はコードで決めない。** 呼び出し側が毎回**自由文**で渡す。
+#
+# 2026-08-07 ユーザー指摘＝「正面バストアップ構図、もう飽きた。構図・シチュエーション共に
+# 変化持たせろ」「リスト明示するな。直近10動画の構図をメモっておいて被らないように自由に
+# 選べ」。以前はここに「上半身バストアップ・正面寄り3/4・顔40%以上」を**直書き**していた
+# ので、situation に何を書いても打ち消されて毎回同じ絵になっていた。選択肢を enum で並べても
+# 同じこと（軸が固定される）なので**持たない**。
+#
+# 過去に使った構図は `intro-generation-log` に1行ずつ記録し、**直近10本と被らないものを
+# 自分で組み立てる**（ショットサイズ・カメラ高さ・体の向き・姿勢・画面内の位置・前景など、
+# どの軸を動かしてもよい）。
+#
+# ここが持つのは**リップシンクが破綻しない下限**だけ。
+LIPSYNC_SAFETY = (
+    " The mouth must be fully visible and unobstructed, lips closed, "
+    "face not cropped and not turned away past a 3/4 view, {expression}. "
+    "16:9 aspect. NO TEXT, no watermark."
 )
 
 
 def resolve_character_ref(char: str, assets_dir: str | Path = DEFAULT_ASSETS) -> Path:
-    """キャラの **フルアート参照** `<char>_a*.webp` を返す（chibi/マスコットは除外）。"""
+    """キャラの **フルアート参照** `<char>_a*.webp` を返す（chibi/マスコットは除外）。
+
+    ⚠️ ここが返すのは **LP 用に縮小された立ち姿**（実測 565x1024 / 30〜40KB）。
+    顔は縦120px程度しかないので、**引きの構図や情報量の多い背景を頼むと絵柄を再現しきれない**
+    （2026-09-09: 司の開始フレームが「安っぽい水彩」になった）。
+    同じ `assets_dir` に `<char>_c*`（実測 2000〜2500px / 200〜280KB）がある場合は
+    そちらの方が質感の情報が多い。**既定は変えていない**ので、使うときは
+    `--ref-image` / `ref_images=` で明示的に渡すこと（`available_character_refs` で一覧できる）。
+    """
     assets = Path(assets_dir)
     hits = [Path(p) for p in glob.glob(str(assets / f"{char}_a*"))
             if "chibi" not in Path(p).name.lower()]
@@ -86,13 +153,38 @@ def resolve_character_ref(char: str, assets_dir: str | Path = DEFAULT_ASSETS) ->
     return sorted(hits)[0]
 
 
-def build_prompt(situation: str, char: str = "") -> str:
-    """同一性制約＋シチュ（呼び出し側の創作）＋リップシンク構図 を結合した最終プロンプト。
+def available_character_refs(char: str,
+                             assets_dir: str | Path = DEFAULT_ASSETS) -> list[Path]:
+    """そのキャラの参照候補を**サイズの大きい順**に返す（chibi は除外）。
+
+    `<char>_a*`（立ち姿の縮小版）だけでなく `<char>_c*`（高解像度のバストアップ等）も拾う。
+    どれを使うかは呼び出し側の判断 —— **既定の解決は変えない**。
+    """
+    assets = Path(assets_dir)
+    hits = [Path(p) for p in glob.glob(str(assets / f"{char}_*"))
+            if "chibi" not in Path(p).name.lower() and Path(p).is_file()]
+    return sorted(hits, key=lambda p: (-p.stat().st_size, p.name))
+
+
+def build_prompt(situation: str, char: str = "", framing: str = "",
+                 expression: str = "") -> str:
+    """同一性制約＋シチュ＋構図（どちらも呼び出し側の創作）＋破綻回避の下限。
 
     表情は ``char`` の設定（mascot.md 準拠の `EXPRESSION`）を使う＝**勝手に笑顔にしない**。
+    ``expression`` を渡すとその回だけ上書きする（``EXPRESSION`` は書き換えない）。
+    キャラの素の表情は残したまま、**その絵だけ笑わせたくない**ときに使う
+    （2026-09-09「笑顔止めろ」＝司の既定 `faint smile` を消したいがキャラ設定は変えない）。
+
+    ``framing`` は**自由文**（例: "knee-up, camera low near the ground looking up,
+    body nearly in profile with the face turned back, subject on the right third"）。
+    空なら構図の指定なし＝モデルに委ねる。**既定の構図は持たない**（持つと毎回同じになる）。
     """
-    return (IDENTITY_CONSTRAINT + situation.strip()
-            + LIPSYNC_FRAMING.format(expression=expression_of(char)))
+    parts = [IDENTITY_CONSTRAINT + situation.strip()]
+    if framing.strip():
+        parts.append(" Framing: " + framing.strip().rstrip(".") + ".")
+    parts.append(LIPSYNC_SAFETY.format(
+        expression=expression.strip() or expression_of(char)))
+    return "".join(parts)
 
 
 def generate_character_image(
@@ -100,13 +192,40 @@ def generate_character_image(
     situation: str,
     out_path: str | Path,
     *,
-    model: str = "gemini-3-pro-image",
+    model: str = NANO_BANANA_2,
     assets_dir: str | Path = DEFAULT_ASSETS,
+    framing: str = "",
+    ref_images: list[str | Path] | None = None,
+    image_size: str = DRAFT_SIZE,
+    expression: str = "",
 ) -> Path:
-    """キャラ参照＋同一性制約＋シチュで開始フレームを生成して保存する。"""
-    ref = resolve_character_ref(char, assets_dir)
+    """キャラ参照＋同一性制約＋シチュで開始フレームを生成して保存する。
+
+    ``ref_images`` を渡すと**その画像だけ**を参照にする（複数可・渡した順で送る）。
+    省略時は従来どおり `resolve_character_ref()`＝`<char>_a*` の1枚。
+    高解像度の `<char>_c*` を使いたいときはここで明示する（`resolve_character_ref` の注意参照）。
+
+    ``image_size`` の既定は **`DRAFT_SIZE`＝下見用の 0.5K**（`FINAL_SIZE` が本番の 2K）。
+    🚨 **いきなり 2K で焼かない。** 構図・服装・背景の当たりは 0.5K で取り、
+    ユーザーが良しとしたものだけ同じプロンプトで 2K を焼く（2026-09-09 ユーザー指示）。
+    """
+    if ref_images:
+        refs = [Path(x) for x in ref_images]
+        for r in refs:
+            if not r.is_file():
+                raise FileNotFoundError(f"参照画像が無い: {r}")
+    else:
+        refs = [resolve_character_ref(char, assets_dir)]
     data = generate_image(
-        build_prompt(situation, char), model=model, aspect_ratio="16:9", image_size="2K",
-        reference_images=[("image/webp", ref.read_bytes())],
+        build_prompt(situation, char, framing, expression), model=model,
+        aspect_ratio="16:9", image_size=image_size,
+        reference_images=[(_mime_of(r), r.read_bytes()) for r in refs],
     )
     return save_image(data, out_path)
+
+
+def _mime_of(p: Path) -> str:
+    """拡張子から画像 MIME を決める（参照は webp とは限らない）。"""
+    ext = p.suffix.lower()
+    return {".webp": "image/webp", ".png": "image/png",
+            ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(ext, "image/webp")

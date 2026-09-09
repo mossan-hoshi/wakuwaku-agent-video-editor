@@ -18,6 +18,8 @@ from wwedit.common.media import ffmpeg_error, ffmpeg_path
 from wwedit.edl.schema import Edl, Subtitle, TimeRange
 
 __all__ = [
+    "video_encode_args",
+
     "build_filter_script",
     "build_filter_script_framed",
     "framing_crop_filter",
@@ -82,8 +84,23 @@ def build_speaker_mix_filter(
     return ";".join(lines)
 
 
+def _piece_mosaic(
+    mosaics, r: TimeRange, *, src_w: int, src_h: int, prev: str, tag: str
+) -> tuple[list[str], str]:
+    """1ピースぶんのモザイク断片（``trim`` 直後＝ソース座標に焼く）。無ければ空。"""
+    if not mosaics:
+        return [], prev
+    from wwedit.compose.overlay import source_mosaic_chains
+
+    return source_mosaic_chains(
+        list(mosaics), r.start, r.end,
+        src_w=src_w, src_h=src_h, prev_label=prev, tag=tag,
+    )
+
+
 def build_filter_script(
-    ranges: list[TimeRange], *, vsrc: str = "0:v", asrc: str = "0:a", freezes=()
+    ranges: list[TimeRange], *, vsrc: str = "0:v", asrc: str = "0:a", freezes=(),
+    mosaics=(), src_w: int = 1920, src_h: int = 1080,
 ) -> str:
     """keep区間列から filter_complex スクリプト本文を作る（v+a を trim→concat）。
 
@@ -100,9 +117,18 @@ def build_filter_script(
     for i, (r, extra) in enumerate(pieces):
         vpad = f",tpad=stop_mode=clone:stop_duration={extra:.3f}" if extra > 0 else ""
         # set/asetpts でPTSを各区間ローカルに振り直し、concatの連結を正しくする
-        lines.append(
-            f"[{vsrc}]trim=start={r.start:.3f}:end={r.end:.3f},setpts=PTS-STARTPTS{vpad}[v{i}];"
-        )
+        mo, prev = _piece_mosaic(
+            mosaics, r, src_w=src_w, src_h=src_h, prev=f"t{i}", tag=str(i))
+        if mo:
+            lines.append(f"[{vsrc}]trim=start={r.start:.3f}:end={r.end:.3f},"
+                         f"setpts=PTS-STARTPTS[t{i}];")
+            lines += [f"{c};" for c in mo]
+            lines.append(f"[{prev}]null{vpad}[v{i}];")
+        else:
+            lines.append(
+                f"[{vsrc}]trim=start={r.start:.3f}:end={r.end:.3f},"
+                f"setpts=PTS-STARTPTS{vpad}[v{i}];"
+            )
         a_s, a_e = r.start + cum, r.end + cum + extra
         cum += extra
         lines.append(
@@ -149,6 +175,7 @@ def build_filter_script_framed(
     vout: str = "outv",
     aout: str = "outa",
     freezes=(),
+    mosaics=(),
 ) -> str:
     """keep区間を**フレーミング境界でも割り**、各小片の中点の bbox で crop+scale して concat する。
 
@@ -158,16 +185,27 @@ def build_filter_script_framed(
     ``freezes``: build_filter_script と同じフリーズ対応（映像 tpad / 音声 σ 座標）。
     """
     pieces = framed_pieces(edl, ranges, freezes)
+    src_w = int(getattr(edl.source, "width", 0) or 1920)
+    src_h = int(getattr(edl.source, "height", 0) or 1080)
     lines: list[str] = []
     labels: list[str] = []
     cum = 0.0
     for i, (r, extra) in enumerate(pieces):
         vf = framing_crop_filter(bbox_at(edl, (r.start + r.end) / 2), out_w, out_h)
         vpad = f",tpad=stop_mode=clone:stop_duration={extra:.3f}" if extra > 0 else ""
-        lines.append(
-            f"[{vsrc}]trim=start={r.start:.3f}:end={r.end:.3f},"
-            f"setpts=PTS-STARTPTS,{vf}{vpad}[v{i}];"
-        )
+        # 🚨 モザイクは **crop の前**（ソース座標）で焼く。出力秒での enable はドリフトする。
+        mo, prev = _piece_mosaic(
+            mosaics, r, src_w=src_w, src_h=src_h, prev=f"t{i}", tag=str(i))
+        if mo:
+            lines.append(f"[{vsrc}]trim=start={r.start:.3f}:end={r.end:.3f},"
+                         f"setpts=PTS-STARTPTS[t{i}];")
+            lines += [f"{c};" for c in mo]
+            lines.append(f"[{prev}]{vf}{vpad}[v{i}];")
+        else:
+            lines.append(
+                f"[{vsrc}]trim=start={r.start:.3f}:end={r.end:.3f},"
+                f"setpts=PTS-STARTPTS,{vf}{vpad}[v{i}];"
+            )
         a_s, a_e = r.start + cum, r.end + cum + extra
         cum += extra
         lines.append(
@@ -376,6 +414,7 @@ def build_framed_overlay_script(
     out_w: int = 1920,
     out_h: int = 1080,
     freezes=(),
+    mosaics=(),
 ) -> str:
     """framed concat を土台に、loading クリップを出力タイムラインへ overlay 合成する。
 
@@ -385,7 +424,7 @@ def build_framed_overlay_script(
     """
     base = build_filter_script_framed(
         edl, ranges, vsrc=vsrc, asrc=asrc, out_w=out_w, out_h=out_h,
-        vout="base0", aout="outa", freezes=freezes,
+        vout="base0", aout="outa", freezes=freezes, mosaics=mosaics,
     )
     # 各 filterchain は末尾 ';' を付けず、最後に ";\n" で結合する（区切りを確実にする）。
     chains: list[str] = [base]
@@ -629,6 +668,132 @@ def render_bgm_playlist(tracks: list[str | Path], out_wav: str | Path) -> Path:
     return out_wav
 
 
+#: NVENC の preset。`p1`(最速)〜`p7`(最高画質)。
+#:
+#: 2026-08-07 実測（1080p・30秒・エンコード単体＝全体からデコード実測を引いた値）:
+#:
+#: ===================  ==============  ==================
+#: 設定                 エンコード秒    x264 medium 比
+#: ===================  ==============  ==================
+#: x264 medium crf20    5.16            1.0
+#: nvenc p6 cq20        2.53            2.0倍
+#: **nvenc p4 cq20**    **1.31**        **3.9倍**
+#: ===================  ==============  ==================
+#:
+#: 一度 `p6`（画質側）にしたら**効きが半分**になった。GPU に余裕があるからと上げると、
+#: NVENC を入れた意味そのものが薄れる。`p4` は x264 の `medium` 相当で、cq が同じなら
+#: 画質差は配信用途で問題にならない。
+#:
+#: 🚨 `-hwaccel cuda`（デコードもGPU）は**遅くなる**（実測 1.35s → 3.45s）。
+#: フィルタが CPU 側にある限り、毎フレーム GPU→CPU の転送が入るため。付けないこと。
+NVENC_PRESET = "p4"
+
+#: 既定エンコーダを決める環境変数。`nvenc` を入れると**全工程**が GPU で焼く。
+#: 🚨 これを作った理由: `compose video` にだけ `--encoder` を足して「GPUに逃がせる」と
+#: 報告したが、`compose warp` は `libx264` 決め打ちのままで **12分のCPUエンコードが
+#: 走った**（2026-08-07）。焼く場所は全部で10箇所あり、フラグを1つずつ足す方式では
+#: 必ず取りこぼす。**入口を1つにする。**
+ENCODER_ENV = "WWEDIT_ENCODER"
+
+
+def default_encoder() -> str:
+    """環境変数 ``WWEDIT_ENCODER`` の既定エンコーダ（未設定・未知の値なら ``x264``）。"""
+    import os
+
+    v = (os.environ.get(ENCODER_ENV) or "").strip().lower()
+    return v if v in ("x264", "nvenc") else "x264"
+
+
+def _enable_expr(spans, *, pad: float = 0.05) -> str:
+    """``overlay`` の ``enable`` 式（``between(t,a,b)+between(t,c,d)…``）。
+
+    ffmpeg の式では ``+`` が論理和として働く（非0なら真）。
+    出ていない区間の**アルファ合成をまるごと飛ばす**ためのもの。[E] 感情エフェクトは
+    実測で 25分の動画に約10秒（1%未満）しか出ないのに、素のままだと全フレームで
+    合成が走る。``pad`` は境界でフレームを取りこぼさないための余白。
+    """
+    return "+".join(
+        f"between(t,{max(0.0, a - pad):.3f},{b + pad:.3f})" for a, b in spans)
+
+
+def _crop_to_content(
+    items: list[tuple[Path, float]],
+) -> tuple[int, int, list[tuple[Path, float]]]:
+    """全画面PNG群を**中身のある矩形へ切り揃える**（返り値は置き位置と切り出し後の列）。
+
+    重ねるのは絵のある所だけでよい。切り出す矩形は**全枚数の和集合**にする——
+    バラバラの寸法だと1本の concat ストリームに繋げないため。
+    中身が空（全部透明）なら元のまま返す。
+    """
+    from PIL import Image
+
+    box: tuple[int, int, int, int] | None = None
+    for p, _d in items:
+        b = Image.open(p).convert("RGBA").split()[3].getbbox()
+        if b is None:
+            continue
+        box = b if box is None else (min(box[0], b[0]), min(box[1], b[1]),
+                                     max(box[2], b[2]), max(box[3], b[3]))
+    if box is None:
+        return 0, 0, items
+    out: list[tuple[Path, float]] = []
+    for p, d in items:
+        q = p.with_name(p.stem + "_c.png")
+        if not q.exists():
+            Image.open(p).convert("RGBA").crop(box).save(q)
+        out.append((q, d))
+    return box[0], box[1], out
+
+
+def _ffconcat_text(items: list[tuple[Path, float]]) -> str:
+    """``(PNG, 表示秒)`` の列 → concat demuxer のプレイリスト本文。
+
+    末尾はエントリを重複させる（concat demuxer は**最後の duration を無視する**）。
+    """
+    lines = ["ffconcat version 1.0"]
+    for p, dur in items:
+        lines.append("file '%s'" % str(p.resolve()).replace("\\", "/").replace("'", r"'\''"))
+        lines.append(f"duration {dur:.5f}")
+    if items:
+        lines.append("file '%s'"
+                     % str(items[-1][0].resolve()).replace("\\", "/").replace("'", r"'\''"))
+    return "\n".join(lines) + "\n"
+
+
+def _blank_png(dir_: Path, w: int, h: int, tmp_files: list[str]) -> Path:
+    """完全に透明な PNG（章が付いていない区間を埋める）。"""
+    from PIL import Image
+
+    p = dir_ / "rib_blank.png"
+    if not p.exists():
+        Image.new("RGBA", (w, h), (0, 0, 0, 0)).save(p)
+        tmp_files.append(str(p))
+    return p
+
+
+def video_encode_args(encoder: str | None, crf: int, preset: str) -> list[str]:
+    """`-c:v` 以降のエンコード指定を組み立てる。**焼くところは全部ここを通す。**
+
+    ``encoder=None`` なら `default_encoder()`（＝環境変数）に従う。
+
+    **x264 と NVENC は品質指定の意味が違う**。x264 は `-crf`、NVENC は
+    `-cq`（`-b:v 0` を添えて初めて固定品質になる。付け忘れると既定ビットレートに
+    引っ張られて破綻する）。preset も `medium/veryfast` ではなく `p1`〜`p7` なので、
+    x264 の preset 名をそのまま渡してはいけない。
+
+    ``-pix_fmt yuv420p`` は**どちらにも付ける**（呼び手が足さなくて済むように）。
+    """
+    encoder = encoder or default_encoder()
+    if encoder == "nvenc":
+        return ["-c:v", "h264_nvenc", "-preset", NVENC_PRESET, "-tune", "hq",
+                "-rc", "vbr", "-cq", str(crf), "-b:v", "0",
+                "-pix_fmt", "yuv420p"]
+    if encoder != "x264":
+        raise ValueError(f"未知のエンコーダ: {encoder}（x264 / nvenc）")
+    return ["-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+            "-pix_fmt", "yuv420p"]
+
+
 def compose_kept(
     edl: Edl,
     out_path: str | Path,
@@ -655,8 +820,10 @@ def compose_kept(
     chibi_height: int = 0,
     chibi_margin: tuple[int, int] | None = None,
     chibi_mouth_step: float | None = None,
+    chibi_fx: bool | None = None,
     infographic: bool = False,
     data_dir: str | Path | None = None,
+    encoder: str | None = None,
 ) -> Path:
     """EDL の keep区間を連結した mp4 を出力する。
 
@@ -673,6 +840,10 @@ def compose_kept(
       テキストは字幕と同一の二重縁取り。
     ``infographic``: True で ``EDL.infographic``（本編冒頭の要約図解）を
       **上部UI/ちびキャラ/字幕に被らない安全枠**へ重ねる（モザイクより上・ちびより下）。
+    ``encoder``: ``"x264"``（CPU）/ ``"nvenc"``（GPU）/ ``None``＝環境変数
+      ``WWEDIT_ENCODER``（未設定なら x264）。**焼く工程は全部この既定に従う**ので、
+      レーン全体を GPU にしたいときは環境変数を1つ立てるだけでよい。
+      GPU を使う他の工程（Qwen3-TTS の合成）と**同時に走らせない**こと。
     ``max_ranges``: 先頭N区間だけ合成（動作確認用）。
     ``ranges``: 連結対象区間の明示指定（**投稿単位[K]はその単位の区間を渡す**）。
       指定時は kept_ranges() の代わりに使い、字幕/フレーミング/BGMもこの区間から導出される。
@@ -704,6 +875,8 @@ def compose_kept(
         asrc = "1:a"
     else:
         asrc = "0:a"
+    # モザイクは**ソース座標のまま crop の前**で焼く（出力秒の enable はドリフトする）
+    src_mosaics = [o for o in (edl.overlays or []) if o.kind == "mosaic"]
     if framed:
         intervals = loading_overlay_intervals(
             edl, ranges, default_label=loading_label, freezes=frz)
@@ -725,14 +898,19 @@ def compose_kept(
             script = build_framed_overlay_script(
                 edl, ranges, intervals, vlabels,
                 vsrc="0:v", asrc=asrc, out_w=out_w, out_h=out_h, freezes=frz,
+                mosaics=src_mosaics,
             )
         else:
             script = build_filter_script_framed(
                 edl, ranges, vsrc="0:v", asrc=asrc, out_w=out_w, out_h=out_h,
-                freezes=frz,
+                freezes=frz, mosaics=src_mosaics,
             )
     else:
-        script = build_filter_script(ranges, vsrc="0:v", asrc=asrc, freezes=frz)
+        script = build_filter_script(
+            ranges, vsrc="0:v", asrc=asrc, freezes=frz, mosaics=src_mosaics,
+            src_w=int(getattr(edl.source, "width", 0) or 1920),
+            src_h=int(getattr(edl.source, "height", 0) or 1080),
+        )
 
     vmap = "[outv]"
 
@@ -784,39 +962,8 @@ def compose_kept(
             script = f"{script};\n" + ";\n".join(ov_chains)
             vmap = f"[{prev}]"
 
-    # モザイク: 映像＋ユーザー画像に適用（字幕/リボン/テキストより**下**）。
-    # 楕円形状は PIL で白楕円のグレースケールPNGを作り、マスク入力として渡す。
-    if ovs:
-        from wwedit.compose.overlay import (
-            build_mosaic_chains,
-            mosaic_overlays,
-            mosaic_region_px,
-        )
-
-        mosaics = mosaic_overlays(ovs)
-        if mosaics:
-            from PIL import Image, ImageDraw
-
-            mo_dir = Path(tempfile.mkdtemp())
-            # マスクは**配置ごと**（crop 区間ごとに領域サイズが変わる）に作るので添字で引く
-            mask_input_of: dict[int, int] = {}
-            for k, p in enumerate(mosaics):
-                if p.o.shape == "ellipse":
-                    _, _, rw, rh = mosaic_region_px(p, out_w, out_h)
-                    m = Image.new("L", (rw, rh), 0)
-                    ImageDraw.Draw(m).ellipse([0, 0, rw - 1, rh - 1], fill=255)
-                    mp = mo_dir / f"mask_{k:03d}_{p.o.id}.png"
-                    m.save(mp)
-                    tmp_files.append(str(mp))
-                    idx = sum(1 for a in cmd if a == "-i")
-                    cmd += ["-loop", "1", "-i", str(mp)]
-                    mask_input_of[k] = idx
-            prev = vmap[1:-1]
-            mo_chains, last = build_mosaic_chains(
-                mosaics, prev, out_w, out_h, mask_input_of=mask_input_of)
-            if mo_chains:
-                script = f"{script};\n" + ";\n".join(mo_chains)
-                vmap = f"[{last}]"
+    # モザイクはここには**無い**。crop の前（ソース座標）で焼き済み＝`src_mosaics`。
+    # 出力秒で貼ると、trim→concat のフレーム丸めドリフトで境界の数フレームだけ外れる。
 
     # 要約インフォグラフィック（[I]・本編冒頭N秒）。モザイクより上・ちびキャラより下。
     # 安全枠に contain 収めしてあるので本来ぶつからないが、万一はみ出しても
@@ -842,13 +989,14 @@ def compose_kept(
         from wwedit.compose.chibi_overlay import chibi_side_specs
 
         ch_dir = Path(tempfile.mkdtemp())
+        ch_h = chibi_height or (edl.chibi.height_px if edl.chibi else 320)
         specs = chibi_side_specs(
             edl, ranges, tmp_dir=ch_dir, margin=chibi_margin,
             mouth_step=chibi_mouth_step,
             data_dir=Path(data_dir) if data_dir else None,
+            height=ch_h,
         )
         if specs:
-            ch_h = chibi_height or (edl.chibi.height_px if edl.chibi else 320)
             prev = vmap[1:-1]
             ch_chains: list[str] = []
             for k, sp in enumerate(specs):
@@ -857,6 +1005,8 @@ def compose_kept(
                 tmp_files.append(str(sp.ffconcat_path))
                 nxt = f"cvb{k}"
                 flip = ",hflip" if sp.flip else ""
+                # スプライトは `scaled_sprite` で**先に**表示サイズへ縮めてあるので、
+                # ここでの scale は保険（寸法が合っていれば ffmpeg が素通しする）。
                 ch_chains.append(
                     f"[{idx}:v]fps=30,scale=-1:{ch_h}{flip},format=rgba[chb{k}]")
                 ch_chains.append(
@@ -866,6 +1016,33 @@ def compose_kept(
                 prev = nxt
             script = f"{script};\n" + ";\n".join(ch_chains)
             vmap = f"[{prev}]"
+
+            # [E] 感情エフェクト（ちびの直後・字幕より下）。ちびとは**別トラック**なので
+            # hflip は掛からない（記号が鏡文字になるのを構造的に防ぐ）。
+            if chibi_fx if chibi_fx is not None else edl.chibi.fx_enabled:
+                from wwedit.compose.chibi_fx_overlay import fx_side_specs
+
+                fx_specs = fx_side_specs(
+                    specs, tmp_dir=ch_dir, chibi_h=ch_h, total=out_total(ranges, frz),
+                    out_w=out_w, out_h=out_h, margin=chibi_margin or (24, 24),
+                    cfg=edl.chibi)
+                fx_chains: list[str] = []
+                for k, fs in enumerate(fx_specs):
+                    # エフェクトが**1度も出ない**側は入力ごと作らない（段が丸ごと消える）
+                    if not fs.spans:
+                        continue
+                    idx = sum(1 for a in cmd if a == "-i")
+                    cmd += ["-f", "concat", "-safe", "0", "-i", str(fs.ffconcat_path)]
+                    tmp_files.append(str(fs.ffconcat_path))
+                    nxt = f"cfo{k}"
+                    fx_chains.append(f"[{idx}:v]fps=30,format=rgba[cfx{k}]")
+                    fx_chains.append(
+                        f"[{prev}][cfx{k}]overlay={fs.x}:{fs.y}:eof_action=pass:"
+                        f"enable='{_enable_expr(fs.spans)}'[{nxt}]")
+                    prev = nxt
+                if fx_chains:
+                    script = f"{script};\n" + ";\n".join(fx_chains)
+                    vmap = f"[{prev}]"
 
     # 字幕（モザイクより上）: 出力時刻へ変換した EDL.subtitles を ASS で焼き込む
     if subtitles and edl.subtitles:
@@ -907,8 +1084,8 @@ def compose_kept(
         if ivs:
             schemes = resolve_speaker_schemes(edl)
             rib_dir = Path(tempfile.mkdtemp())
-            prev = vmap[1:-1]  # 角括弧を外す
-            rib_chains: list[str] = []
+            pngs: list[tuple[Path, float]] = []
+            cur = 0.0
             for k, iv in enumerate(ivs):
                 png = rib_dir / f"rib_{k:02d}.png"
                 render_ribbon_png(
@@ -916,16 +1093,25 @@ def compose_kept(
                     scheme=schemes.get(iv["speaker"]), out_w=out_w, out_h=out_h,
                 )
                 tmp_files.append(str(png))
-                idx = sum(1 for a in cmd if a == "-i")
-                cmd += ["-loop", "1", "-i", str(png)]  # 静止PNGを無限フレーム化して区間で被せる
-                nxt = "outvr" if k == len(ivs) - 1 else f"rb{k}"
-                rib_chains.append(
-                    f"[{prev}][{idx}:v]overlay=0:0:eof_action=pass:"
-                    f"enable='between(t,{iv['out_start']:.3f},{iv['out_end']:.3f})'[{nxt}]"
-                )
-                prev = nxt
-            script = f"{script};\n" + ";\n".join(rib_chains)
-            vmap = f"[{prev}]"
+                if iv["out_start"] > cur + 1e-3:      # 章の無い区間は透明で埋める
+                    pngs.append((_blank_png(rib_dir, out_w, out_h, tmp_files),
+                                 iv["out_start"] - cur))
+                pngs.append((png, max(0.0, iv["out_end"] - iv["out_start"])))
+                cur = iv["out_end"]
+            # 全画面(1920x1080)のまま重ねない。絵があるのは左上の帯だけで
+            # **全画面の 0.8%**（実測 313x54）。素のままだと毎フレーム125倍の
+            # アルファ合成を回すことになる（実測: 60秒の合成のうち 12.4秒＝19%）。
+            bx, by, pngs = _crop_to_content(pngs)
+            lst = rib_dir / "ribbon.ffconcat"
+            lst.write_text(_ffconcat_text(pngs), encoding="utf-8")
+            tmp_files.append(str(lst))
+            idx = sum(1 for a in cmd if a == "-i")
+            cmd += ["-f", "concat", "-safe", "0", "-i", str(lst)]
+            prev = vmap[1:-1]  # 角括弧を外す
+            script = (f"{script};\n"
+                      f"[{idx}:v]fps=30,format=rgba[rib];\n"
+                      f"[{prev}][rib]overlay={bx}:{by}:eof_action=pass[outvr]")
+            vmap = "[outvr]"
 
     # テキスト重ね（**最上位**＝リボン・字幕より上／モザイクは掛からない）。
     # 位置指定(\an7+\pos)の ASS を字幕とは別ファイルで最後に重ねる。
@@ -994,12 +1180,7 @@ def compose_kept(
         vmap,
         "-map",
         amap,
-        "-c:v",
-        "libx264",
-        "-preset",
-        preset,
-        "-crf",
-        str(crf),
+        *video_encode_args(encoder, crf, preset),
         "-c:a",
         "aac",
         "-b:a",

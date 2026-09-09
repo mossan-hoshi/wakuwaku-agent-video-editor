@@ -1,9 +1,18 @@
-"""YouTube OAuth を read+upload スコープで再認証し、新しい refresh token を .env に書き戻す。
+"""YouTube OAuth を再認証し、新しい refresh token を .env に書き戻す。
 
-現状の refresh token は ``youtube.upload`` 専用で、既存動画の概要欄取得など読取ができない。
-本スクリプトを一度実行すると、ブラウザ同意1回で ``youtube.readonly`` + ``youtube.upload`` の
-refresh token を取得し、``.env`` の ``WWEDIT_YT_REFRESH_TOKEN`` を**自動で更新**する
-（トークンは標準出力に出さない＝秘匿のまま）。投稿(upload)も引き続き使える。
+ブラウザ同意1回で下の3スコープの refresh token を取得し、``.env`` の
+``WWEDIT_YT_REFRESH_TOKEN`` を**自動で更新**する（トークンは標準出力に出さない＝秘匿のまま）。
+
+🚨 **``youtube.force-ssl`` が要る**（2026-08-08 追加）。``upload`` だけだと
+**投稿した後から直せない**——投稿後に概要欄の誤りが見つかっても `videos.update` が
+403「Insufficient Permission」で落ち、サムネの `thumbnails.set` も同じ理由で落ちる。
+実害: 5本を投稿した後にライセンス表記漏れとタグ漏れが判明し、API では直せなかった。
+
+| スコープ | できること |
+|---|---|
+| `youtube.upload` | 投稿（videos.insert） |
+| `youtube.readonly` | 既存動画の読み取り（videos.list） |
+| **`youtube.force-ssl`** | **概要欄/タイトル/タグの更新（videos.update）・サムネ設定（thumbnails.set）** |
 
 実行: リポジトリ直下で
     uv run --no-sync python scripts/reauth_youtube.py
@@ -19,6 +28,7 @@ from wwedit.common.env import env_value
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
 
 

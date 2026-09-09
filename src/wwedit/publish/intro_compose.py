@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from wwedit.common.media import ffmpeg_error, ffmpeg_path
+from wwedit.compose.ffmpeg_compose import video_encode_args
 from wwedit.edl.schema import Subtitle
 from wwedit.subtitle.ass import build_ass
 
@@ -196,10 +197,12 @@ def compose_intro(
         fil.append("[0:a][jg]amix=inputs=2:duration=first:normalize=0[aout]")
         amap = "[aout]"
     else:
-        amap = "[0:a]"
+        # 🚨 角括弧は**フィルタ出力ラベル**の意味。素の入力ストリームに付けると
+        # 「Output with label '0:a' does not exist」で落ちる（ジングル無しの経路が壊れていた）。
+        amap = "0:a"
     cmd += ["-filter_complex", ";".join(fil), "-map", "[vout]", "-map", amap,
-            "-t", f"{dur:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-c:a", "aac", "-pix_fmt", "yuv420p", str(out_path)]
+            "-t", f"{dur:.3f}", *video_encode_args(None, 20, "veryfast"),
+            "-c:a", "aac", str(out_path)]
     proc = subprocess.run(cmd, cwd=str(work), capture_output=True, text=True)
     if proc.returncode != 0:
         tail = ffmpeg_error(proc.stderr)

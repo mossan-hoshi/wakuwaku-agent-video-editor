@@ -267,50 +267,103 @@ def _stamp(out: Path, key: str) -> None:
     out.with_suffix(out.suffix + ".key").write_text(key, encoding="utf-8")
 
 
+#: 1本の filtergraph に載せる片の数の上限。
+#:
+#: ⚠️ 片を全部1発で回すと**極端に遅くなる**。`concat` は入力を**順に**読むので、
+#: 後ろの分岐は自分の担当フレームを concat が来るまで抱え続ける＝素材まるごとが
+#: キューに溜まる。実測(2026-08-07・1327片・素材39分): CPUは1.3コアしか使われず
+#: 出力は 1.2〜3.6MB/分 しか伸びず、完走に**5時間以上**の見込みだった
+#: （同じ素材の通常合成は24分の動画を37分で焼ける）。
+#: 分割して連結すれば、抱えるフレームが1バッチぶんに収まる。
+WARP_BATCH = 120
+
+
+def _encode_warp_part(
+    src_video: str | Path, pieces: list[Piece], out_mp4: Path, *,
+    fps: int, crf: int, preset: str, src_frames: int | None,
+    encoder: str | None = None,
+) -> None:
+    from wwedit.compose.ffmpeg_compose import video_encode_args
+
+    arg, path = _script_arg(
+        build_warp_video_script(pieces, fps=fps, src_frames=src_frames))
+    try:
+        _run([ffmpeg_path(), "-y", "-i", str(src_video),
+              "-filter_complex_script", arg, "-map", "[outv]", "-an",
+              *video_encode_args(encoder, crf, preset), str(out_mp4)],
+             "映像のワープ")
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _concat_parts(parts: list[Path], out_mp4: Path) -> None:
+    """CFR・同一設定の断片を**再エンコードせず**つなぐ（枚数は1枚も動かさない）。"""
+    lst = out_mp4.with_suffix(out_mp4.suffix + ".parts.txt")
+    lst.write_text("".join(f"file '{p.resolve().as_posix()}'\n" for p in parts),
+                   encoding="utf-8")
+    try:
+        _run([ffmpeg_path(), "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+              "-c", "copy", str(out_mp4)], "ワープ断片の連結")
+    finally:
+        lst.unlink(missing_ok=True)
+
+
 def render_warped_footage(
     src_video: str | Path, pieces: list[Piece], out_mp4: str | Path, *,
     fps: int, crf: int = 18, preset: str = "veryfast", refresh: bool = False,
+    encoder: str | None = None,
 ) -> Path:
     """収録映像を Warp どおり可変速で書き出す（**映像のみ**・音は入れない）。
 
     中間素材なので ``crf`` は高画質側（既定18）にする。ここで劣化させると本合成の
     再エンコードと合わせて二重に効く。
 
+    片が ``WARP_BATCH`` を超えたら**分けて焼いてから連結**する（理由は同定数の説明）。
+    断片も鍵で管理するので、途中で落ちても焼き直すのは残りだけ。
+
     同じ計画で作った結果が残っていれば作り直さない（``refresh=True`` で強制）。
     """
     out_mp4 = Path(out_mp4)
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
-    script = build_warp_video_script(pieces, fps=fps,
-                                     src_frames=video_frame_count(src_video))
-    key = _cache_key(src_video, f"v{crf}:{preset}:{fps}:{script}")
+    src_frames = video_frame_count(src_video)
+    script = build_warp_video_script(pieces, fps=fps, src_frames=src_frames)
+    from wwedit.compose.ffmpeg_compose import default_encoder
+
+    enc = encoder or default_encoder()
+    # 鍵にエンコーダを混ぜる（変えたら焼き直す）。**x264 だけ無印**にしてあるのは、
+    # 既に焼いてある素材を形式変更だけで捨てないため（12分ぶんが無駄になる）。
+    tag = "" if enc == "x264" else f"{enc}:"
+    key = _cache_key(src_video, f"v{tag}{crf}:{preset}:{fps}:{script}")
     if not refresh and _up_to_date(out_mp4, key):
         return out_mp4
-    arg, path = _script_arg(script)
-    try:
-        _run([ffmpeg_path(), "-y", "-i", str(src_video),
-              "-filter_complex_script", arg, "-map", "[outv]", "-an",
-              "-c:v", "libx264", "-pix_fmt", "yuv420p",
-              "-crf", str(crf), "-preset", preset, str(out_mp4)],
-             "映像のワープ")
-    finally:
-        path.unlink(missing_ok=True)
+
+    groups = [pieces[i:i + WARP_BATCH] for i in range(0, len(pieces), WARP_BATCH)]
+    if len(groups) <= 1:
+        _encode_warp_part(src_video, pieces, out_mp4, fps=fps, crf=crf,
+                          preset=preset, src_frames=src_frames, encoder=enc)
+    else:
+        parts: list[Path] = []
+        for i, g in enumerate(groups):
+            part = out_mp4.with_name(f"{out_mp4.stem}.part{i:03d}{out_mp4.suffix}")
+            pkey = _cache_key(src_video, f"v{tag}{crf}:{preset}:{fps}:"
+                              f"{build_warp_video_script(g, fps=fps, src_frames=src_frames)}")
+            if refresh or not _up_to_date(part, pkey):
+                _encode_warp_part(src_video, g, part, fps=fps, crf=crf,
+                                  preset=preset, src_frames=src_frames,
+                                  encoder=enc)
+                _stamp(part, pkey)
+            parts.append(part)
+        _concat_parts(parts, out_mp4)
+        for p in parts:
+            p.unlink(missing_ok=True)
+            p.with_suffix(p.suffix + ".key").unlink(missing_ok=True)
     _stamp(out_mp4, key)
     return out_mp4
 
 
-def render_warped_audio(src_audio: str | Path, pieces: list[Piece],
-                        out_wav: str | Path, *, refresh: bool = False) -> Path:
-    """素材由来の音（PC音声）を Warp に合わせて切り詰めた wav を書き出す。
-
-    同じ計画で作った結果が残っていれば作り直さない（``refresh=True`` で強制）。
-    """
-    out_wav = Path(out_wav)
-    out_wav.parent.mkdir(parents=True, exist_ok=True)
-    script = build_warp_audio_script(pieces)
-    key = _cache_key(src_audio, script)
-    if not refresh and _up_to_date(out_wav, key):
-        return out_wav
-    arg, path = _script_arg(script)
+def _encode_warp_audio_part(src_audio: str | Path, pieces: list[Piece], out_wav: Path) -> None:
+    """片のかたまりを1本の wav へ焼く（PCM・48kHz・ステレオ）。"""
+    arg, path = _script_arg(build_warp_audio_script(pieces))
     try:
         _run([ffmpeg_path(), "-y", "-i", str(src_audio),
               "-filter_complex_script", arg, "-map", "[outa]",
@@ -318,6 +371,42 @@ def render_warped_audio(src_audio: str | Path, pieces: list[Piece],
              "PC音声のワープ")
     finally:
         path.unlink(missing_ok=True)
+
+
+def render_warped_audio(src_audio: str | Path, pieces: list[Piece],
+                        out_wav: str | Path, *, refresh: bool = False) -> Path:
+    """素材由来の音（PC音声）を Warp に合わせて切り詰めた wav を書き出す。
+
+    **映像と同じく片が ``WARP_BATCH`` を超えたら分けて焼いてから連結する。**
+    音は PCM を切って繋ぐだけなのに、1本の filtergraph に千片載せると `concat` が
+    順に読む都合で詰まる（映像とまったく同じ理由＝`WARP_BATCH` の説明）。
+    実測(2026-08-07・1329片・素材32分): **1本あたり34分43秒**かかっていた——
+    映像を分割で 5時間→6分 にした時に、**同じ構造のこちらを直し忘れていた**。
+
+    同じ計画で作った結果が残っていれば作り直さない（``refresh=True`` で強制）。
+    """
+    out_wav = Path(out_wav)
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    key = _cache_key(src_audio, build_warp_audio_script(pieces))
+    if not refresh and _up_to_date(out_wav, key):
+        return out_wav
+
+    groups = [pieces[i:i + WARP_BATCH] for i in range(0, len(pieces), WARP_BATCH)]
+    if len(groups) <= 1:
+        _encode_warp_audio_part(src_audio, pieces, out_wav)
+    else:
+        parts: list[Path] = []
+        for i, g in enumerate(groups):
+            part = out_wav.with_name(f"{out_wav.stem}.part{i:03d}{out_wav.suffix}")
+            pkey = _cache_key(src_audio, build_warp_audio_script(g))
+            if refresh or not _up_to_date(part, pkey):
+                _encode_warp_audio_part(src_audio, g, part)
+                _stamp(part, pkey)
+            parts.append(part)
+        _concat_parts(parts, out_wav)
+        for p in parts:
+            p.unlink(missing_ok=True)
+            p.with_suffix(p.suffix + ".key").unlink(missing_ok=True)
     _stamp(out_wav, key)
     return out_wav
 
@@ -402,6 +491,14 @@ def warp_edl(
         f.start, f.end = to_out(f.start), to_out(f.end)
     for o in new.overlays:
         o.start, o.end = to_out(o.start), to_out(o.end)
+    # 投稿単位も写す。ワープ後の EDL は**カットの無い1本**なので、単位は
+    # 「先頭〜末尾のひと続き」に畳んでよい（`post_unit_ranges` はこの span しか見ない）。
+    # 写し忘れるとソース秒のまま残り、`--post-unit-index` が別の場所を切り出す。
+    for pu in new.post_units:
+        if pu.ranges:
+            lo = to_out(min(r.start for r in pu.ranges))
+            hi = to_out(max(r.end for r in pu.ranges))
+            pu.ranges = [TimeRange(start=lo, end=hi)]
     meta = dict(new.meta or {})
     voice = dict(meta.get("voice") or {})
     voice["clips"] = [

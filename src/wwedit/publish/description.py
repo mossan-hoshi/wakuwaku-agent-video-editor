@@ -32,6 +32,12 @@ from wwedit.edl.schema import Edl
 MIN_CHAPTER_SECONDS = 10
 MIN_CHAPTER_COUNT = 3
 
+#: YouTube の概要欄の上限。**超えると投稿そのものが弾かれる**。
+#: 章を細かく刻むと本文より先にここへ当たる（2026-09-09: 400話者に1人1章を付けると
+#: 章行だけで 6,876字＝本文を1字も書かずに超過した）。数えるのは**書記素ではなく文字数**で、
+#: 日本語1文字も1文字として数える（YouTube の実装に合わせる）。
+MAX_DESCRIPTION_CHARS = 5000
+
 # 行頭のタイムスタンプ。`MM:SS` / `M:SS` / `H:MM:SS`。直後は空白か行末。
 _TS_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?(?=\s|$)")
 
@@ -128,8 +134,17 @@ def chapter_problems(text: str) -> list[str]:
     章は「条件を1つでも破ると全部出ない」仕様なので、**投稿前に弾く**のが唯一の防ぎ方。
     検査するのは公式の条件そのもの: 先頭 ``00:00`` / 3個以上 / 昇順 / **各章10秒以上**。
     加えて、全角数字・全角コロンで書かれた時刻行（YouTube は認識しない）を書式エラーにする。
+    **概要欄そのものの長さ**（`MAX_DESCRIPTION_CHARS`）もここで見る —— 章を細かく刻むと
+    条件は全部満たしているのに投稿時に弾かれる、という一番遠い所で失敗するため。
     """
     problems: list[str] = []
+
+    n = len(text)
+    if n > MAX_DESCRIPTION_CHARS:
+        problems.append(
+            f"概要欄が {n} 字（上限 {MAX_DESCRIPTION_CHARS} 字）。"
+            f"{n - MAX_DESCRIPTION_CHARS} 字ぶん減らすこと（章を間引くのが手っ取り早い）"
+        )
 
     for raw in text.splitlines():
         line = raw.strip()

@@ -54,8 +54,10 @@ def post_unit_chapter_lines(edl: Edl, idx: int) -> list[str]:
     if not ranges:
         return []
     lo, hi = ranges[0].start, ranges[-1].end
+    # 末尾は**排他**にする。単位の境界(hi)は次の単位の先頭章の開始と同じ値なので、
+    # 含めると前半の概要欄に後半の1章目が混ざる（2026-08-24 実害）。
     chs = [c for c in sorted(edl.chapters, key=lambda c: c.start_at)
-           if lo - 1e-6 <= c.start_at < hi]
+           if lo - 1e-6 <= c.start_at < hi - 1e-6]
     lines: list[str] = []
     frz = tuple(edl.freezes or ())
     for i, c in enumerate(chs):

@@ -9,7 +9,7 @@ from rich import print as rprint
 
 from wwedit.edl.schema import load_edl, save_edl
 from wwedit.subtitle.build import subtitles_from_utterances
-from wwedit.subtitle.summarize import apply_captions, write_caption_input
+from wwedit.subtitle.summarize import apply_captions, caption_remap, write_caption_input
 
 subtitle_app = typer.Typer(help="style字幕（メイリオ二重枠）", no_args_is_help=True)
 
@@ -129,18 +129,39 @@ def prepare_captions(
 def apply_captions_cmd(
     edl_path: Path = typer.Argument(..., help="対象 EDL"),
     decisions: Path = typer.Option(None, help="LLM決定JSON（既定 caption_decisions.json）"),
+    keep_stale: bool = typer.Option(
+        False, "--keep-stale",
+        help="**窓番号を貼り直さない**（既定は本文で照合して貼り直す）"),
 ) -> None:
     """caption-summarizer の要約字幕決定を EDL.subtitles に反映する。各字幕は発話チャンクの
 
     開始〜終了まで表示（早く消えない・次字幕開始は越えない）。
+
+    要約を作ったあとにカットを直すと窓番号がずれる。既定では `caption_input.tsv` の原文と
+    **本文で照合して貼り直す**（対応が消えた窓の要約は捨てる＝切った発言が字幕に出ない）。
+    貼り直しを止めるなら `--keep-stale`。
     """
     edl = load_edl(edl_path)
     dec = decisions or (edl_path.parent / "caption_decisions.json")
     if not dec.exists():
         raise typer.BadParameter(f"決定JSONが無い: {dec}（prepare-captions→LLM が必要）")
-    apply_captions(edl, dec)
+    remap = None if keep_stale else (
+        caption_remap(edl, edl_path.parent / "caption_input.tsv") or None)
+    apply_captions(edl, dec, remap=remap)
     save_edl(edl, edl_path)
     rprint(f"[green]要約字幕 {len(edl.subtitles)}件[/] を EDL.subtitles に反映")
+    if remap:
+        moved = sum(1 for p, c in remap.items() if p != c)
+        if moved:
+            rprint(f"[red]窓番号が {moved} 件ずれていた[/]（要約のあとカットを直したぶん）"
+                   "→ 本文で照合して貼り直した")
+        import json as _json
+        used = {int(c.get("utt", -1)) for c in _json.loads(
+            dec.read_text(encoding="utf-8")).get("captions", [])}
+        gone = sorted(used - set(remap))
+        if gone:
+            head = "、".join(str(i) for i in gone[:20]) + ("…" if len(gone) > 20 else "")
+            rprint(f"[red]カットで消えた窓 {len(gone)} 件の要約を捨てた[/]: {head}")
 
 
 @subtitle_app.command()

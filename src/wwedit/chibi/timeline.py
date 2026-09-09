@@ -16,19 +16,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from wwedit.compose.ffmpeg_compose import src_to_out
+from wwedit.compose.ffmpeg_compose import out_to_src, src_to_out
 from wwedit.edl.schema import Edl, TimeRange, voiced_word_spans
 
 __all__ = [
     "SpriteInterval", "GAP_MERGE_S", "MIN_SPAN_S", "MOUTH_STEP_S", "EMOTION_HOLD_S",
     "voiced_word_spans", "speaking_spans_from_words", "speaking_spans_from_report",
+    "rebase_report_rows",
     "mouth_track", "emotion_track", "emotion_track_from_report",
     "build_side_timeline", "write_ffconcat",
+    "BLINK_PERIOD_S", "BLINK_JITTER_S", "BLINK_CLOSED_S", "BLINK_MIN_FRAMES",
+    "blink_times", "apply_blink", "emotion_change_times",
 ]
 
 GAP_MERGE_S = 0.25       # word 間の隙間がこれ未満なら連続発話とみなす
 MIN_SPAN_S = 0.12        # これ未満の孤立スパンは捨てる（ノイズ）
-MOUTH_STEP_S = 0.083     # 口の切替1段の表示秒（≒12fps。1サイクル 8段 ≒ 0.66s）
+MOUTH_STEP_S = 0.119     # 口の切替1段の表示秒（1サイクル 8段 ≒ 0.95s）
+#: 2026-08-07 ユーザー指摘「口パクが早すぎる。今の7割ぐらいの速度で」。
+#: 0.083（≒12fps・1サイクル0.66s）は口が震えて見えた。0.083/0.7 = 0.119。
 MOUTH_WAVE = (1, 0, 1, 1, 0, 1, 0, 0)  # 0=閉 / 1=開。等間隔だと機械的なので粗密を付ける
 #: 感情を出す長さ。基本は normal で、割当のある発話の頭だけ短く表情を変える（メリハリ重視）
 EMOTION_HOLD_S = 2.5
@@ -72,6 +77,45 @@ def speaking_spans_from_words(
             if oe - os_ > 1e-3:
                 raw.append((os_, oe))
     return _merge_spans(raw, merge_gap=GAP_MERGE_S, min_span=MIN_SPAN_S)
+
+
+def rebase_report_rows(
+    rows: list[dict], edl: Edl, ranges: list[TimeRange], freezes=(),
+    *, out_is_source: bool = False,
+) -> list[dict]:
+    """report の ``out_start`` を**投稿単位[K]のローカル出力秒**へ写し、単位外の行を落とす。
+
+    🚨 report の ``out_start`` は**収録まるごとの出力秒**。投稿単位で合成するときに
+    そのまま使うと、単位の開始ぶん（この回は 1494.1秒）ずれる。**先頭の単位だけは
+    0 始まりなので偶然合ってしまい**、後半だけ壊れる——2026-08-07 に実害:
+    後半で片方のちびの口が 0.5 秒しか開かず、もう片方は 735 秒の一続きと判定されて
+    **鳴りっぱなし**になった（ユーザー指摘「ずっとノアしか口パクしてない」）。
+
+    写像は「全体出力秒 → ソース秒 → 単位ローカル出力秒」。カット穴もフリーズも
+    既存の変換に任せる。
+
+    🚨 ``out_is_source``: **ワープ後レポート**(``warped_voice_tts_report.json``)を渡すときは
+    ``True``。ワープ後EDLの素材は「出力タイムラインを焼き固めた1本」なので、その
+    ``out_start`` は**ワープ素材のソース秒そのもの**であって出力秒ではない。生成直後は
+    ``segments`` が全体1本＝この2つが一致するため ``False`` でも偶然合うが、**ワープ後EDLに
+    カットを1つ入れた瞬間に壊れる**——2026-08-08 に実害: 後半TTS版で意味不明発話の 11.84秒を
+    カットしたところ、``out_to_src`` がカット穴のぶん先送りして解釈し、カット地点より後の
+    口パクが**まるごと 11.84秒 遅れた**（ユーザー指摘「まだ口パクズレ起きてますよ」）。
+    """
+    full = edl.kept_ranges()
+    out: list[dict] = []
+    for r in rows:
+        if "out_start" not in r:
+            out.append(r)                    # 旧レポート（out_start 無し）は触らない
+            continue
+        at = float(r["out_start"])
+        src = at if out_is_source else out_to_src(full, at, freezes)
+        if not any(rg.start - 1e-6 <= src <= rg.end + 1e-6 for rg in ranges):
+            continue                         # この単位に入らないクリップ
+        r2 = dict(r)
+        r2["out_start"] = src_to_out(ranges, src, freezes)
+        out.append(r2)
+    return out
 
 
 def _row_span(r: dict, ranges: list[TimeRange], freezes) -> tuple[float, float]:
@@ -279,6 +323,122 @@ def build_side_timeline(
     return out
 
 
+# ── 瞬き（口パクと直交・後段で重ねる）──────────────────────
+
+#: ヒトの瞬きは3〜5秒に1回。平均間隔とゆらぎ。
+BLINK_PERIOD_S = 4.2
+BLINK_JITTER_S = 1.8
+#: 閉眼時間（30fps で約4フレーム）。
+BLINK_CLOSED_S = 0.12
+#: 1/30 グリッドで最低これだけのフレーム数を確保する。
+BLINK_MIN_FRAMES = 3
+#: たまに2連で瞬く。
+DOUBLE_BLINK_P = 0.18
+DOUBLE_BLINK_GAP_S = 0.20
+
+
+def blink_times(
+    total: float, *, speaker: str, fps: int = 30,
+) -> list[tuple[float, float]]:
+    """瞬きの区間 ``[(start, end), ...]`` を**決定的に**作る。
+
+    ⚠️ 組み込みの ``hash()`` は使わない。Python の文字列ハッシュはプロセスごとに
+    ソルトされるので、レンダするたびに瞬きの位置が変わってしまう。話者名の sha1 を種に
+    することで、**左右のキャラで位相が自動的にずれる**。
+
+    合成チェーンは ``fps=30`` なので 1/30 グリッドへスナップし、最低 ``BLINK_MIN_FRAMES``
+    フレームを保証する（端数の区間はフレームごと消えるか、周囲の口パクをずらす）。
+    """
+    import hashlib
+    import random
+
+    seed = int.from_bytes(hashlib.sha1(f"{speaker}|blink".encode()).digest()[:8], "big")
+    rng = random.Random(seed)
+    step = 1.0 / fps
+    out: list[tuple[float, float]] = []
+    t = rng.uniform(0.5, BLINK_PERIOD_S)
+    while t < total:
+        n = 2 if rng.random() < DOUBLE_BLINK_P else 1
+        for k in range(n):
+            s = t + k * (BLINK_CLOSED_S + DOUBLE_BLINK_GAP_S)
+            if s >= total:
+                break
+            s = round(s * fps) / fps
+            e = max(round((s + BLINK_CLOSED_S) * fps) / fps, s + BLINK_MIN_FRAMES * step)
+            out.append((s, min(e, total)))
+        t += max(1.0, BLINK_PERIOD_S + rng.uniform(-BLINK_JITTER_S, BLINK_JITTER_S))
+    return [(s, e) for s, e in out if e > s]
+
+
+def apply_blink(
+    intervals: list[SpriteInterval], blinks: list[tuple[float, float]],
+    *, blinkable: set[str],
+) -> list[SpriteInterval]:
+    """スプライト区間へ瞬き（``eye=1``）を重ねる。**口パクとは独立**に適用する。
+
+    ``build_side_timeline`` を変更せず後段で掛けるので、口パク×感情の交差ロジックと
+    瞬きが疎結合になる。``blinkable`` に無い感情（surprised は見開いたまま、smile は
+    元から ^_^ で閉じている）はそのまま。全時間被覆・隙間なし・総尺は変わらない。
+    """
+    if not blinks:
+        return _merge_same(
+            [SpriteInterval(iv.start, iv.end, iv.emotion, iv.mouth, iv.eye or 0)
+             for iv in intervals])
+    out: list[SpriteInterval] = []
+    for iv in intervals:
+        segs = [(max(s, iv.start), min(e, iv.end)) for s, e in blinks
+                if e > iv.start + 1e-9 and s < iv.end - 1e-9]
+        if not segs or iv.emotion not in blinkable:
+            out.append(SpriteInterval(iv.start, iv.end, iv.emotion, iv.mouth, 0))
+            continue
+        pos = iv.start
+        for s, e in segs:
+            if s > pos + 1e-9:
+                out.append(SpriteInterval(pos, s, iv.emotion, iv.mouth, 0))
+            out.append(SpriteInterval(max(s, pos), e, iv.emotion, iv.mouth, 1))
+            pos = e
+        if pos < iv.end - 1e-9:
+            out.append(SpriteInterval(pos, iv.end, iv.emotion, iv.mouth, 0))
+    return _merge_same(out)
+
+
+def _merge_same(ivs: list[SpriteInterval]) -> list[SpriteInterval]:
+    """同一スプライト（感情・口・目がすべて同じ）の隣接区間を結合する。"""
+    out: list[SpriteInterval] = []
+    for iv in ivs:
+        p = out[-1] if out else None
+        if (p and p.emotion == iv.emotion and p.mouth == iv.mouth and p.eye == iv.eye
+                and abs(p.end - iv.start) < 1e-9):
+            out[-1] = SpriteInterval(p.start, iv.end, p.emotion, p.mouth, p.eye)
+        else:
+            out.append(iv)
+    return [iv for iv in out if iv.end - iv.start > 1e-9]
+
+
+def emotion_change_times(
+    track: list[tuple[float, float, str]], *, min_gap: float | None = None,
+) -> list[tuple[float, str]]:
+    """感情トラックから「切り替わった瞬間」を ``[(t, emotion), ...]`` で返す。
+
+    ``normal`` への復帰は出さない（平常に戻るのは演出上のイベントではない）。
+
+    ⚠️ 入力は必ず ``emotion_track``/``emotion_track_from_report`` の**出力トラック**を渡す。
+    ``EDL.emotion_cues`` を直接読むと、方式Bでソース秒と読み上げクリップの配置位置がずれて
+    「口だけ元の位置に残る」のと同じ罠を踏む（STATUS 17.8）。
+    """
+    from wwedit.chibi.fx import FX_MIN_GAP_S
+
+    gap = FX_MIN_GAP_S if min_gap is None else min_gap
+    out: list[tuple[float, str]] = []
+    prev: str | None = None
+    for s, _e, emo in track:
+        if emo != prev and emo != "normal":
+            if not out or s - out[-1][0] >= gap:
+                out.append((s, emo))
+        prev = emo
+    return out
+
+
 def _ffconcat_path(p: Path) -> str:
     # concat demuxer はシングルクォート囲み。Windows パスは / 区切りにして ' をエスケープ
     return str(p.resolve()).replace("\\", "/").replace("'", r"'\''")
@@ -287,24 +447,33 @@ def _ffconcat_path(p: Path) -> str:
 def write_ffconcat(
     intervals: list[SpriteInterval], char: str, out_path: Path,
     *, available_emotions: set[str] | None = None,
+    blink_emotions: set[str] | None = None,
+    height: int = 0,
 ) -> Path:
     """スプライト区間列を ffconcat プレイリストへ書き出す（合計 duration = 出力尺）。
 
     ``available_emotions``: アセットが実在する感情。無い感情は normal のスプライトへ落とす
-    （生成漏れでも合成を止めない）。末尾はフレームを重複させる（concat demuxer の既知仕様:
-    最終エントリの duration が無視されるため）。
+    （生成漏れでも合成を止めない）。``blink_emotions``: ``m*_e1.png`` が揃っている感情。
+    揃っていなければ ``eye=0``（目を開けたまま）へ落とす＝**瞬きアセットが1枚も無くても
+    従来どおり動く**。末尾はフレームを重複させる（concat demuxer の既知仕様: 最終エントリの
+    duration が無視されるため）。
     """
-    from wwedit.chibi.assets import sprite_path
+    from wwedit.chibi.assets import scaled_sprite, sprite_path
 
-    def resolve(emotion: str, mouth: int) -> Path:
+    def resolve(emotion: str, mouth: int, eye: int | None) -> Path:
         if available_emotions is not None and emotion not in available_emotions:
             emotion = "normal"
-        return sprite_path(char, emotion, mouth)
+        if eye and blink_emotions is not None and emotion not in blink_emotions:
+            eye = 0
+        p = sprite_path(char, emotion, mouth, eye)
+        # **表示サイズへ縮めた実体**を指す。素の 1024² をフレームごとにデコードして
+        # scale すると合成時間の 29% を持っていく（実測 60秒中19.0秒）。
+        return scaled_sprite(p, height) if height else p
 
     lines = ["ffconcat version 1.0"]
     last: Path | None = None
     for iv in intervals:
-        p = resolve(iv.emotion, iv.mouth)
+        p = resolve(iv.emotion, iv.mouth, iv.eye)
         lines.append(f"file '{_ffconcat_path(p)}'")
         lines.append(f"duration {iv.end - iv.start:.5f}")
         last = p

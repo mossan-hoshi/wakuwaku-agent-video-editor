@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 
 from wwedit.common.media import ffmpeg_path
+from wwedit.compose.ffmpeg_compose import video_encode_args
 
 __all__ = [
     "DOT_STATES", "dot_for_frame", "layout_boxes", "build_loading_screen",
@@ -106,7 +107,7 @@ def build_loading_screen(
     cmd = [
         ffmpeg_path(), "-y", "-framerate", str(fps),
         "-i", str(tmp / "f%05d.png"),
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(fps),
+        *video_encode_args(None, 20, "medium"), "-r", str(fps),
         str(out_path),
     ]
     subprocess.run(cmd, capture_output=True)

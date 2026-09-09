@@ -35,6 +35,8 @@ __all__ = [
     "mosaic_region_px",
     "mosaic_effect_filter",
     "build_mosaic_chains",
+    "source_region_px",
+    "source_mosaic_chains",
     "Placed",
     "output_crop_segments",
     "place_overlays",
@@ -257,6 +259,74 @@ def build_mosaic_chains(
     return chains, prev
 
 
+def source_region_px(o: Overlay, src_w: int, src_h: int) -> tuple[int, int, int, int]:
+    """モザイク領域を**ソースフレームの**ピクセル (x, y, w, h) にする（クランプ・最小2px）。"""
+    rw = max(2, min(src_w, int(round(float(o.w or 0.0) * src_w))))
+    rh = max(2, min(src_h, int(round(float(o.h or 0.0) * src_h))))
+    rx = max(0, min(src_w - rw, int(round(float(o.x) * src_w))))
+    ry = max(0, min(src_h - rh, int(round(float(o.y) * src_h))))
+    return rx, ry, rw, rh
+
+
+def source_mosaic_chains(
+    mosaics: list[Overlay],
+    piece_start: float,
+    piece_end: float,
+    *,
+    src_w: int,
+    src_h: int,
+    prev_label: str,
+    tag: str,
+) -> tuple[list[str], str]:
+    """**crop の前**（ソース座標・ソース時刻）でモザイクを焼く断片と最終ラベルを返す。
+
+    🚨 **出力タイムライン秒でモザイクを貼ってはいけない。**
+    合成は keep区間をフレーミング境界で割って ``trim``→``concat`` するので、実際の
+    切り替わり時刻は**フレーム丸めで計算値からドリフトする**（2026-08-07 実測: 計算
+    180.782 に対し実際 180.933＝**4フレーム**ぶん）。秒で ``enable`` を切ると境界の数
+    フレームだけモザイクが外れ、隠していた顔が出る。EDGE_PAD のような保険では**原理的
+    に直らない**（ドリフト量は区間数に比例して増える）。
+
+    ここは ``trim`` 直後＝**そのピースのソース時刻**しか使わないので、ドリフトの影響を
+    受けない。crop はこの後段なので、寄りの画にもモザイクが自動で追従する
+    （crop の外へ出た領域は crop が落とすだけ＝正しい挙動）。粗さ ``strength`` は
+    ソース基準のまま置き、crop 拡大で見かけの粗さが揃う（従来の ``strength*mag`` と同値）。
+
+    ``piece_start``/``piece_end``: そのピースの**ソース秒**。``tag``: ラベルの衝突回避。
+    """
+    chains: list[str] = []
+    prev = prev_label
+    k = 0
+    for o in mosaics:
+        s = max(float(o.start), piece_start)
+        e = min(float(o.end), piece_end)
+        if e - s <= 1e-3:
+            continue
+        rx, ry, rw, rh = source_region_px(o, src_w, src_h)
+        base, crop = f"sb{tag}x{k}", f"sc{tag}x{k}"
+        mz, nxt = f"sz{tag}x{k}", f"sm{tag}x{k}"
+        chains.append(f"[{prev}]split[{base}][{crop}]")
+        eff = mosaic_effect_filter(o, rw, rh, 1.0)
+        if o.shape == "ellipse":
+            # 楕円は alpha を式で作る（マスクPNG入力を増やさない＝領域サイズに依存しない）
+            eff += (
+                ",format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+                "a='if(lte(pow((X-(W/2))/(W/2),2)+pow((Y-(H/2))/(H/2),2),1),255,0)'"
+            )
+        chains.append(f"[{crop}]crop={rw}:{rh}:{rx}:{ry},{eff}[{mz}]")
+        # ピース全体を覆うなら enable を付けない＝境界での取りこぼしが**原理的に**起きない
+        covers_all = s <= piece_start + 1e-6 and e >= piece_end - 1e-6
+        en = (
+            ""
+            if covers_all
+            else f":enable='between(t,{max(0.0, s - piece_start):.3f},{e - piece_start:.3f})'"
+        )
+        chains.append(f"[{base}][{mz}]overlay={rx}:{ry}:eof_action=pass{en}[{nxt}]")
+        prev = nxt
+        k += 1
+    return chains, prev
+
+
 def edl_overlays_for_output(edl: Edl, ranges: list[TimeRange]) -> list[Overlay]:
     """EDL のオーバーレイを出力タイムラインへ変換して返す（合成側の入口）。"""
     return overlays_to_output(edl.overlays or [], ranges, tuple(edl.freezes or ()))
@@ -287,6 +357,11 @@ class Placed:
     w: float
     h: float
     mag: float
+
+
+#: 重ねの表示区間を前後へ広げる秒。crop 区間の境界フレームを取りこぼさないための保険。
+#: 30fps で 1.5 フレームぶん。
+EDGE_PAD_S = 0.05
 
 
 def output_crop_segments(
@@ -336,6 +411,13 @@ def place_overlays(
             s, e = max(float(o.start), s0), min(float(o.end), s1)
             if e - s <= 1e-3:
                 continue
+            # 🚨 **区間の端を1フレームぶん広げる。**
+            # crop 区間の切れ目は「秒」で、映像の切り替わりは「フレーム」なので、
+            # ちょうど境界のフレームがどちらの `enable` にも入らないことがある。
+            # 2026-08-07 実害: 3:03 の切り替わりで**最終フレームだけモザイクが外れ**、
+            # 隠していた顔が見えた。隣同士を重ねれば、境界のフレームは必ずどちらかで覆われる
+            # （1フレーム多く掛かる分には害が無い。抜ける方は取り返しがつかない）。
+            s, e = s - EDGE_PAD_S, e + EDGE_PAD_S
             bx, by, bw, bh = bb if bb else (0, 0, src_w, src_h)
             mx, my = out_w / max(1, bw), out_h / max(1, bh)
             x = (o.x * src_w - bx) * mx

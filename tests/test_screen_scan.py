@@ -92,14 +92,15 @@ def test_load_cache_missing_is_empty(tmp_path) -> None:
 
 def test_ensure_screen_ocr_skips_inference_when_cached(tmp_path) -> None:
     path = tmp_path / "screen_ocr.json"
-    save_cache(path, [FrameOcr(time_s=0.0, boxes=[])])
+    edl = _edl([FramingRegion(start=0, end=10, kind="static")])
+    # キャッシュの照合は**時刻ごと**なので、実際にサンプルする時刻で保存しておく
+    save_cache(path, [FrameOcr(time_s=t, boxes=[]) for t in sample_times(edl)])
     calls = []
 
     def ocr(png):
         calls.append(png)
         return []
 
-    edl = _edl([FramingRegion(start=0, end=10, kind="static")])
     ensure_screen_ocr(edl, path, ocr_fn=ocr, extract_fn=lambda *a: True)
     assert not calls  # 推論を回さない
 
@@ -120,3 +121,52 @@ def test_ensure_screen_ocr_refresh_reruns_and_saves(tmp_path) -> None:
     assert len(calls) == 1
     assert got[0].boxes[0].text == "new"
     assert load_cache(path)[0].boxes[0].text == "new"  # 保存もされている
+
+
+def test_ensure_screen_ocr_resumes_from_a_partial_cache(tmp_path) -> None:
+    """途中で落ちても**続きから**やり直せる（1フレームごとに書く）。
+
+    165フレームのOCRは数分かかり、RAM不足で無言終了したことがある（2026-08-07・
+    100/165 フレーム目）。まとめ書きだと落ちるたびに全部やり直しになっていた。
+    """
+    edl = _edl([
+        FramingRegion(start=0, end=10, kind="static"),
+        FramingRegion(start=10, end=20, kind="static"),
+        FramingRegion(start=20, end=30, kind="static"),
+    ])
+    cache = tmp_path / "screen_ocr.json"
+    times = sample_times(edl)
+    assert len(times) == 3
+
+    calls: list[float] = []
+
+    def _ocr(_png):
+        return [OcrBox(text=f"t{len(calls)}", box=(0, 0, 10, 10))]
+
+    def _extract(_video, t, _png):
+        calls.append(t)
+        # 3枚目でプロセスが死ぬ状況を作る
+        if len(calls) == 3:
+            raise RuntimeError("落ちた")
+        return True
+
+    try:
+        ensure_screen_ocr(edl, cache, ocr_fn=_ocr, extract_fn=_extract)
+    except RuntimeError:
+        pass
+    assert len(load_cache(cache)) == 2       # 落ちる前の2枚は残っている
+
+    calls.clear()
+
+    def _extract_ok(_video, t, _png):
+        calls.append(t)
+        return True
+
+    frames = ensure_screen_ocr(edl, cache, ocr_fn=_ocr, extract_fn=_extract_ok)
+    assert calls == [times[2]]               # **残り1枚だけ**を引き直す
+    assert [f.time_s for f in frames] == times
+
+    # refresh=True は全部引き直す
+    calls.clear()
+    ensure_screen_ocr(edl, cache, refresh=True, ocr_fn=_ocr, extract_fn=_extract_ok)
+    assert calls == times

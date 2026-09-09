@@ -28,6 +28,9 @@ class SideSpec:
     x_expr: str
     y_expr: str
     flip: bool = False   # 左右反転（2体を対面させるため）
+    #: 感情の全時間トラック (start, end, emotion)。エフェクト側が切替時刻を取るのに使う
+    #: （``EDL.emotion_cues`` を直接読むと方式Bで位置がずれるため、必ずこれを渡す）。
+    emotions: tuple[tuple[float, float, str], ...] = ()
 
 
 def chibi_sides(edl: Edl) -> list[tuple[str, str, str]]:
@@ -50,6 +53,7 @@ def chibi_side_specs(
     edl: Edl, ranges: list[TimeRange], *,
     tmp_dir: Path, margin: tuple[int, int] | None = None,
     mouth_step: float | None = None, data_dir: Path | None = None,
+    height: int = 0,
 ) -> list[SideSpec]:
     """左右2体のちびキャラの ffconcat と overlay 式を作る（compose_kept から呼ばれる）。
 
@@ -60,11 +64,20 @@ def chibi_side_specs(
     並べると同じ側を向いて見えるので、``EDL.chibi.flip_sides``（既定 ``["left"]``）の側を
     左右反転して**対面**させる。素材に文字が入ると反転で読めなくなるので、その時は空にする。
     """
-    from wwedit.chibi.assets import char_dir, mouth_pair_paths
+    from wwedit.chibi.assets import (
+        BLINKABLE_EMOTIONS,
+        blink_emotions,
+        char_dir,
+        mouth_pair_paths,
+    )
     from wwedit.chibi.timeline import (
         MOUTH_STEP_S,
+        apply_blink,
+        blink_times,
         build_side_timeline,
+        emotion_track,
         emotion_track_from_report,
+        rebase_report_rows,
         speaking_spans_from_report,
         write_ffconcat,
     )
@@ -76,6 +89,7 @@ def chibi_side_specs(
     flip_sides = set(edl.chibi.flip_sides if edl.chibi else ["left"])
 
     report_rows: list[dict] | None = None
+    report_warped = False
     voice_meta = edl.meta.get("voice") or {}
     if voice_meta.get("method") == "tts" and data_dir:
         # [S2] 時間ワープ後は読み上げの出力位置が変わっている。**ワープ後のレポート**を
@@ -85,8 +99,18 @@ def chibi_side_specs(
         for name in names:
             rp = Path(data_dir) / name
             if rp.exists():
-                report_rows = json.loads(rp.read_text(encoding="utf-8"))["rows"]
+                doc = json.loads(rp.read_text(encoding="utf-8"))
+                report_rows = doc["rows"]
+                # レポート自身の旗を見る（EDL の meta ではなく）。ワープ後EDLでも
+                # ワープ後レポートが無くて素のレポートに落ちる経路があるため。
+                report_warped = bool(doc.get("warped"))
                 break
+    if report_rows is not None:
+        # **投稿単位[K]のローカル秒へ写す**。先頭単位は 0 始まりで偶然合うため、
+        # ここを忘れると「後半だけ口パクが壊れる」という形で出る。
+        # ワープ後レポートの ``out_start`` は**ワープ素材のソース秒**なので出力秒に戻さない。
+        report_rows = rebase_report_rows(
+            report_rows, edl, ranges, frz, out_is_source=report_warped)
 
     specs: list[SideSpec] = []
     for side, speaker, char in chibi_sides(edl):
@@ -104,13 +128,22 @@ def chibi_side_specs(
             spans = speaking_spans_from_report(report_rows, ranges, speaker, freezes=frz)
             emotions = emotion_track_from_report(
                 edl, report_rows, ranges, speaker, total, freezes=frz)
+        if emotions is None:
+            # エフェクト側が切替時刻を取れるよう、ここで確定させて SideSpec に持たせる
+            emotions = emotion_track(edl, ranges, speaker, total, freezes=frz)
         intervals = build_side_timeline(
             edl, ranges, speaker, total=total, freezes=frz, spans=spans,
             emotions=emotions, step=step)
+        # 瞬きは口パクと直交（後段で重ねる）。アセットが無いキャラは空集合になり e0 のまま。
+        blinkable = blink_emotions(char) & set(BLINKABLE_EMOTIONS)
+        if blinkable:
+            intervals = apply_blink(
+                intervals, blink_times(total, speaker=speaker), blinkable=blinkable)
         ffc = write_ffconcat(
             intervals, char, Path(tmp_dir) / f"chibi_{side}.ffconcat",
-            available_emotions=available)
+            available_emotions=available, blink_emotions=blinkable, height=height)
         x = f"{mx}" if side == "left" else f"W-w-{mx}"
         specs.append(SideSpec(side, speaker, char, ffc, x, f"H-h-{my}",
-                              flip=side in flip_sides))
+                              flip=side in flip_sides,
+                              emotions=tuple(emotions)))
     return specs

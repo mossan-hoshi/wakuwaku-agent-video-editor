@@ -220,6 +220,11 @@ def extract_span_wav(track_path: str | Path, span: TimeRange, out_wav: str | Pat
     return out_wav
 
 
+#: 1回の ffmpeg に渡すクリップ数の上限。超えたら分けて作って足す。
+#: `-i` を並べるほどデコーダが同時に開いて遅くなる（365本で12分かかった）。
+ASSEMBLE_BATCH = 60
+
+
 def assemble_track(
     placements: list[tuple], total_dur_s: float,
     out_wav: str | Path, *, sr: int = 48000, normalize: bool = False,
@@ -243,6 +248,35 @@ def assemble_track(
              f"anullsrc=r={sr}:cl=mono:d={total_dur_s:.3f}", str(out_wav)],
             "無音トラック生成",
         )
+        return out_wav
+
+    # **入力を1発に詰め込まない。** `-i` をクリップの数だけ並べて `amix=inputs=N` にすると、
+    # ffmpeg が N 個のデコーダを同時に開いて足並みを揃えて読むので極端に遅くなる。
+    # 実測(2026-08-07・365クリップ): **12分**。ワープ映像/音声で踏んだのと同じ形
+    # （`docs/STATUS.md` §21.7 / §21.7b）。クリップは直列化済みで**重ならない**ので、
+    # 分けて足しても結果は同じ（`amix normalize=0` は素の加算）。
+    if len(placements) > ASSEMBLE_BATCH:
+        import tempfile as _tf
+        tmp = Path(_tf.mkdtemp())
+        parts: list[Path] = []
+        for i in range(0, len(placements), ASSEMBLE_BATCH):
+            part = tmp / f"part{i // ASSEMBLE_BATCH:03d}.wav"
+            assemble_track(placements[i:i + ASSEMBLE_BATCH], total_dur_s, part,
+                           sr=sr, normalize=False)
+            parts.append(part)
+        cmd = ["ffmpeg", "-y"]
+        for q in parts:
+            cmd += ["-i", str(q)]
+        cmd += ["-filter_complex",
+                f"{''.join(f'[{i}:a]' for i in range(len(parts)))}"
+                f"amix=inputs={len(parts)}:normalize=0:duration=longest,"
+                f"apad=whole_dur={total_dur_s:.3f},atrim=0:{total_dur_s:.3f}[out]",
+                "-map", "[out]", "-ar", str(sr), "-ac", "1", str(out_wav)]
+        _run_ffmpeg(cmd, f"トラック連結 {out_wav.name}")
+        for q in parts:
+            q.unlink(missing_ok=True)
+        if normalize:
+            normalize_voice_wav(out_wav, sr=sr)
         return out_wav
 
     cmd = ["ffmpeg", "-y"]

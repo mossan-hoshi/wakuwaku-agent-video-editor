@@ -49,7 +49,8 @@ import tempfile
 from pathlib import Path
 
 from wwedit.common.media import ffmpeg_error, ffmpeg_path, probe
-from wwedit.compose.ffmpeg_compose import _src_to_out, out_total, subtitles_to_output
+from wwedit.compose.ffmpeg_compose import (
+    _src_to_out, out_total, subtitles_to_output, video_encode_args)
 from wwedit.edl.schema import Edl, TimeRange, voiced_word_spans
 
 __all__ = [
@@ -188,12 +189,18 @@ def speech_spans_out(edl: Edl, ranges: list[TimeRange], *, freezes=()) -> list[S
     方式B（TTS読み上げ）は ``meta.voice.clips``（voice-tts-finalize が書く実クリップ位置）を
     正とする。元の word タイミングは読み上げ位置と一致しないので使わない（§14.10-1 の罠）。
     それが無い場合（方式A・変換無し）だけ ``voiced_word_spans`` から作る。
+
+    🚨 **ワープ後EDL**（``meta.voice.warped``）の clips は出力秒ではなく**ワープ素材の
+    ソース秒**（素材が出力タイムラインを焼き固めた1本なので、生成直後だけ両者が一致する）。
+    投稿単位で切り出すときも、後からカットを入れたときもずれるので写像を通す。
     """
-    clips = ((edl.meta or {}).get("voice") or {}).get("clips") or []
+    voice = (edl.meta or {}).get("voice") or {}
+    clips = voice.get("clips") or []
     if clips:
-        return merge_spans(
+        spans = merge_spans(
             (float(c["out_start"]), float(c["out_end"])) for c in clips
         )
+        return src_spans_to_out(spans, ranges, freezes) if voice.get("warped") else spans
     src: list[Span] = []
     for u in edl.utterances:
         src.extend(voiced_word_spans(u.words))
@@ -252,8 +259,14 @@ def desktop_active_spans(
     if db.size == 0:
         return [], {**info, "active_ratio": 0.0, "reason": "empty"}
     floor = float(np.percentile(db, 20))
-    top = float(np.percentile(db, 99))
-    info.update(floor_db=round(floor, 1), p99_db=round(top, 1))
+    # 上端は **p99.9**。p99 だと「鳴っているのが全体の1%未満」のトラックで
+    # 上端がまだ無音を指し、下の flat 判定が誤爆する。2026-08-07 に実害:
+    # ワープ後のPC音声（無音部分が完全な digital silence になる）で
+    # p20=p99=-120 → flat → 0件 になり、**方式Bだけデモ音源にBGMが被った**。
+    # `top` は flat 判定にしか使わない（閾値は floor+margin）ので、既存の検出結果は動かない。
+    top = float(np.percentile(db, 99.9))
+    info.update(floor_db=round(floor, 1), p99_db=round(float(np.percentile(db, 99)), 1),
+                top_db=round(top, 1))
     if top - floor < DESKTOP_DYNAMIC_MIN_DB:
         return [], {**info, "active_ratio": 0.0, "reason": "flat"}
     thr = floor + margin_db
@@ -676,7 +689,7 @@ def apply_speedups(
     cmd = [ffmpeg_path(), "-y", "-i", str(in_mp4),
            "-filter_complex_script", str(script),
            "-map", "[outv]", "-map", "[outa]",
-           "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+           *video_encode_args(None, crf, preset),
            "-c:a", "aac", "-b:a", "192k", str(out_mp4)]
     proc = subprocess.run(cmd, capture_output=True, text=True,
                           encoding="utf-8", errors="replace")

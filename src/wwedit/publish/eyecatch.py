@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 from wwedit.common.media import ffmpeg_error, ffmpeg_path
+from wwedit.compose.ffmpeg_compose import video_encode_args
 
 LOGO = Path(__file__).resolve().parents[3] / "assets" / "logo" / "nobetube_logo.png"
 _MEIRYO = r"C:\Windows\Fonts\meiryob.ttc"
@@ -69,22 +70,38 @@ def _wrap_chars(title: str, font, draw, max_w: float) -> list[str]:
 _BREAK_AFTER = set("、。，．・…！？!?）)」』】〉》〕")  # ここの直後で割ると自然
 
 
+def _is_latin_word_ch(c: str) -> bool:
+    """英数字（ASCII）か。**この並びの途中では改行しない。**"""
+    return c.isascii() and c.isalnum()
+
+
 def _split2_balanced(title: str, font, draw, max_w: float):
     """2行に分けて**両行 max_w 以下**かつ左右幅が最も均等になる分割を返す（無ければ None）。
 
     区切り記号の直後で割れる候補は均等度を少し優遇し、語中の不自然な改行を避ける。
+
+    🚨 **英単語の途中では絶対に割らない**。均等さだけで選ぶと
+    「崩壊現象とhappy-co / llapse-makerの誕生」のように英単語が割れる
+    （2026-09-08 #107 のアイキャッチで実際に出た）。ハイフンの後ろは割ってよい。
+    ただし禁止すると1行も作れない場合は、はみ出すよりマシなので許可する。
     """
     n = len(title)
-    best = None
-    for k in range(1, n):
-        a, b = title[:k], title[k:]
-        wa = draw.textlength(a, font=font)
-        wb = draw.textlength(b, font=font)
-        if wa <= max_w and wb <= max_w:
-            score = abs(wa - wb) - (40 if title[k - 1] in _BREAK_AFTER else 0)
-            if best is None or score < best[0]:
-                best = (score, [a, b])
-    return best[1] if best else None
+
+    def _search(forbid_midword: bool):
+        best = None
+        for k in range(1, n):
+            if forbid_midword and _is_latin_word_ch(title[k - 1]) and _is_latin_word_ch(title[k]):
+                continue
+            a, b = title[:k], title[k:]
+            wa = draw.textlength(a, font=font)
+            wb = draw.textlength(b, font=font)
+            if wa <= max_w and wb <= max_w:
+                score = abs(wa - wb) - (40 if title[k - 1] in _BREAK_AFTER else 0)
+                if best is None or score < best[0]:
+                    best = (score, [a, b])
+        return best[1] if best else None
+
+    return _search(True) or _search(False)
 
 
 def _fit_title(title: str, draw, max_w: float, max_lines: int = 2):
@@ -270,8 +287,7 @@ def _render_ink(out_mp4: Path, *, seed: int, duration: float,
     proc = subprocess.Popen(
         [ff, "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
          "-s", f"{gw}x{gh}", "-r", str(fps), "-i", "-",
-         "-t", f"{duration}", "-c:v", "libx264", "-preset", "medium",
-         "-crf", "15", "-pix_fmt", "yuv420p", str(out_mp4)],
+         "-t", f"{duration}", *video_encode_args(None, 15, "medium"), str(out_mp4)],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     bg = dev(np.array(_BG, "float32"))
@@ -307,8 +323,6 @@ def generate_eyecatch(
     *,
     seed: int = 0,
     jingle: str | Path | None = None,
-    voice: str | Path | None = None,
-    voice_name: str = "",
     duration: float = 2.0,
     jingle_offset: float | None = None,
     logo_path: str | Path = LOGO,
@@ -318,9 +332,13 @@ def generate_eyecatch(
 ) -> Path:
     """2秒アイキャッチ mp4 生成（**白地インク有機**＋タイトル＋ロゴ＋音・seed で変化）。
 
-    音は **``voice``（のべつべ！キャラの一言・既定の運用）** か ``jingle``（旧・音楽）。
-    ``voice`` 指定時はイントロと同じ**右上のロゴ＋キャラ名バッジ**を出し、声が2秒に収まらなければ
-    尺を声に合わせて伸ばす（言い切る前に切らない）。
+    音は ``jingle``（音楽）を渡したときだけ付く。**キャラの一言読み上げは廃止**
+    （2026-09-08 ユーザー指示: 読み上げの質が安定しないので機能ごと削除）。
+
+    🚨 jingle が無くても**無音の音声トラックは必ず付ける**。挿入側
+    （`compose.eyecatch_insert`）は本編と concat するために `[N:a]` を参照しており、
+    音声ストリームが無いと `concat ... matches no streams` で落ちる
+    （2026-09-08: 一言ボイス廃止で音声が消え、35分回した合成が最後の1工程で死んだ）。
     """
     rng = random.Random(seed)
     out_path = Path(out_path).resolve()
@@ -329,31 +347,18 @@ def generate_eyecatch(
 
     logo_path = Path(logo_path)
     has_logo = logo_path.exists()
-    use_voice = bool(voice)
-    if use_voice:
-        jingle = None
-        vdur = _audio_dur(voice)
-        duration = max(duration, round(vdur + 0.45, 3))  # 語尾を切らない
 
     ink_mp4 = _render_ink(work / "ink.mp4", seed=seed, duration=duration,
                           out_w=out_w, out_h=out_h, fps=fps)
     title_png = _title_card(title, work / "title.png", w=out_w, h=out_h)
 
-    # 右上バッジ（ロゴ＋キャラ名）＝イントロと同一の作り。voice のときだけ出す。
-    badge_png = None
-    if use_voice and voice_name and has_logo:
-        from wwedit.publish.intro_compose import _badge
-
-        badge_png = _badge(voice_name, logo_path, work / "badge.png", size=104)
-
-    has_aud = bool(jingle) or use_voice
     off = 0.0
     if jingle:
         jdur = _audio_dur(jingle)
         off = jingle_offset if jingle_offset is not None else (
             round(rng.uniform(0, max(0.0, jdur - duration - 0.1)), 2) if jdur > duration else 0.0)
 
-    # 入力: 0=インク背景 1=title (2=logo|badge) (3=音)
+    # 入力: 0=インク背景 1=title (2=logo) (3=音)
     t_title = round(duration * 0.32, 3)   # インク展開後にタイトル登場
     fin = max(1, int(fps * 0.12))
     fout = max(1, int(fps * (duration - 0.26)))
@@ -362,53 +367,39 @@ def generate_eyecatch(
         "[0:v][ti]overlay=0:0[vt]",
     ]
     last = "vt"
-    # voice のときは右上バッジ（ロゴ＋キャラ名）、従来は右下ロゴ。
-    overlay_png = badge_png if badge_png is not None else (logo_path if has_logo else None)
+    overlay_png = logo_path if has_logo else None
     if overlay_png is not None:
-        if badge_png is not None:
-            fil.append("[2:v]null[lg]")
-            fil.append(f"[{last}][lg]overlay=W-w-28:24[vl]")
-        else:
-            fil.append("[2:v]scale=170:170[lg]")
-            fil.append(f"[{last}][lg]overlay=W-w-44:H-h-40[vl]")
+        fil.append("[2:v]scale=170:170[lg]")
+        fil.append(f"[{last}][lg]overlay=W-w-44:H-h-40[vl]")
         last = "vl"
     # 端は白へフェード（インク世界観・黒落ちにしない）
     fil.append(f"[{last}]fade=in:0:{fin}:color=white,"
                f"fade=out:{fout}:{fin}:color=white[vout]")
-    amap = None
-    if has_aud:
-        aidx = 3 if overlay_png is not None else 2
-        if use_voice:
-            # 声は切らない：頭を少しだけ遅らせ、末尾だけ軽くフェード。
-            fil.append(
-                f"[{aidx}:a]adelay=120|120,apad,atrim=0:{duration},"
-                f"afade=out:st={max(0.0, duration - 0.25)}:d=0.25[aout]"
-            )
-        else:
-            fil.append(
-                f"[{aidx}:a]afade=in:st=0:d=0.2,afade=out:st={duration - 0.3}:d=0.3[aout]"
-            )
-        amap = "[aout]"
+    # 音声入力は jingle でも無音でも**必ず1本**（入力番号は logo の有無で 2 or 3）。
+    aidx = 3 if overlay_png is not None else 2
+    if jingle:
+        fil.append(
+            f"[{aidx}:a]afade=in:st=0:d=0.2,afade=out:st={duration - 0.3}:d=0.3[aout]"
+        )
+    else:
+        fil.append(f"[{aidx}:a]anull[aout]")
+    amap = "[aout]"
 
     # タイトルは alpha フェードするため -loop で全尺フレーム化（静止画1枚だと fade が効かない）
     cmd = [ffmpeg_path(), "-y", "-i", str(ink_mp4),
            "-loop", "1", "-framerate", str(fps), "-t", f"{duration}", "-i", str(title_png)]
     if overlay_png is not None:
         cmd += ["-i", str(overlay_png)]
-    if use_voice:
-        cmd += ["-i", str(Path(voice).resolve())]
-    elif jingle:
+    if jingle:
         cmd += ["-ss", f"{off}", "-t", f"{duration}", "-i", str(Path(jingle).resolve())]
-    cmd += ["-filter_complex", ";".join(fil), "-map", "[vout]"]
-    if amap:
-        cmd += ["-map", amap]
-    cmd += ["-t", f"{duration}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-pix_fmt", "yuv420p"]
-    if amap:
-        # 出力 -t で尺は確定済み。-shortest を併用すると loop画像入力との相互作用で
-        # 音声が 0 サンプル化（AAC Qavg:nan）し無音動画になるため付けない。
-        cmd += ["-c:a", "aac"]
-    cmd += [str(out_path)]
+    else:
+        cmd += ["-f", "lavfi", "-t", f"{duration}",
+                "-i", "anullsrc=r=48000:cl=stereo"]
+    cmd += ["-filter_complex", ";".join(fil), "-map", "[vout]", "-map", amap]
+    cmd += ["-t", f"{duration}", *video_encode_args(None, 20, "veryfast")]
+    # 出力 -t で尺は確定済み。-shortest を併用すると loop画像入力との相互作用で
+    # 音声が 0 サンプル化（AAC Qavg:nan）し無音動画になるため付けない。
+    cmd += ["-c:a", "aac", str(out_path)]
 
     proc = _run(cmd)
     if proc.returncode != 0:

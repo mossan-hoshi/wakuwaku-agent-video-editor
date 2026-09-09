@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 from wwedit.common.media import ffmpeg_error
-from wwedit.compose.ffmpeg_compose import ffmpeg_path
+from wwedit.compose.ffmpeg_compose import ffmpeg_path, video_encode_args
 
 __all__ = ["probe_av", "shift_chapter_lines", "prepend_intro"]
 
@@ -104,8 +104,7 @@ def prepend_intro(
     cmd = [
         ffmpeg_path(), "-y", "-i", str(intro),
         "-vf", vf,
-        "-c:v", "libx264", "-profile:v", "high", "-level", "4.0",
-        "-pix_fmt", "yuv420p", "-crf", str(crf), "-preset", preset,
+        *video_encode_args(None, crf, preset), "-profile:v", "high", "-level", "4.0",
         "-c:a", "aac", "-ar", str(spec["sample_rate"]),
         "-ac", str(spec["channels"]), "-b:a", "192k",
         str(conv),

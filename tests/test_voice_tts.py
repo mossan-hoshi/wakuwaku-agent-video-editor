@@ -337,3 +337,38 @@ def test_subtitles_from_reading_shows_canonical_notation():
     joined = "".join(s.text.replace("\n", "") for s in subs)
     assert "Lyria 3.5" in joined and "Suno AI" in joined
     assert "リリア" not in joined and "スノー" not in joined
+
+
+# ── 参照セット指定（`--ref` / job["ref"]）────────────────────────────────────
+def _ref_plan(char_sets, job_ref, tries=6, base_seed=0):
+    """`_qwen_runner` の参照セット選択と**同じ式**（本体を import せず式だけ照合する）。
+
+    ランナーは別 venv のサブプロセスで走るので、ここでは選択規則そのものを検証する。
+    """
+    ref_names = char_sets or ["normal_01"]
+    want = (job_ref or "").strip()
+    if want:
+        ref_names = [want] + [r for r in ref_names if r != want]
+    return [ref_names[min(t // 2, len(ref_names) - 1)] for t in range(tries)]
+
+
+def test_requested_ref_set_is_used_first():
+    """🚨 指定した参照セットが**1手目**に来る。
+
+    2026-08-08 実害: `ref_sets(char) or [job["ref"]]` と書いていたため、参照セットが
+    1つでもあるキャラでは or の右が評価されず `--ref` が無視され、`--ref set4` で
+    録り直しても先頭セット(set1)の音がそのまま出た（尺が1バイトも変わらなかった）。
+    """
+    plan = _ref_plan(["set1", "set2", "set3", "set4"], "set4")
+    assert plan[0] == "set4"
+    assert plan[1] == "set4"          # 同じセットでシードだけ変える2手が先
+    assert "set1" in plan             # 駄目なら他のセットへ回る
+
+
+def test_no_ref_keeps_the_previous_order():
+    plan = _ref_plan(["set1", "set2", "set3"], "")
+    assert plan[0] == "set1"
+
+
+def test_unknown_char_falls_back_to_a_name():
+    assert _ref_plan([], "")[0] == "normal_01"

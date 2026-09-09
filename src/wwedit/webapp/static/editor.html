@@ -103,14 +103,14 @@
 <div id="app">
   <header>
     <b>タイムラインエディタ</b>
-    <span id="meta" style="color:#9aa"></span>
+    <span id="meta" style="color:#9aa"></span><span id="toast" style="display:none;margin-left:10px;padding:2px 8px;border-radius:4px;background:#5a1e1e;color:#ffd7d7;font-size:12px"></span>
     <button class="t" id="mSrc">ソース</button>
     <button class="t" id="mPrev">レンダ結果</button>
     <button class="t on" id="mBoth">両方</button>
     <span style="color:#667">|</span>
     <button class="t" id="uBtn" title="Ctrl+Z">↶</button><button class="t" id="rBtn" title="Ctrl+Shift+Z">↷</button>
     <span class="sp"></span>
-    <span style="color:#778;font-size:11px">J/K/L=逆停順 ・ ←→=1F ・ ↑↓=選択種別の区切り ・ I/O=in/out ・ Del=範囲カット ・ B=分割 ・ N=スナップ ・ ホイール=移動/Ctrl=ズーム/Alt=縦スクロール ・ 重ね: Ctrl+C/V=コピペ・Del=削除 ・ 編集は即自動保存</span>
+    <span style="color:#778;font-size:11px">J/K/L=逆停順 ・ ←→=1F ・ ↑↓=選択種別の区切り ・ I/O=in/out ・ Del=範囲カット ・ B=分割 ・ N=スナップ ・ Del=選択中の字幕/重ねを削除 ・ M/.=ズーム 2/3倍・3/2倍 ・ ホイール=移動/Ctrl=ズーム/Alt=縦スクロール ・ 重ね: Ctrl+C/V=コピペ・Del=削除 ・ 編集は即自動保存</span>
   </header>
   <div id="stage">
     <div class="vbox" id="boxSrc"><div class="vl">入力（ソース）<span style="color:#667">／調整クリップのcrop枠を重畳・ドラッグで調整</span></div><video id="vid"></video><div id="cropov"></div><div id="ovlov"></div></div>
@@ -197,8 +197,17 @@ function setMode(m){
 $("mSrc").onclick=()=>setMode("src"); $("mPrev").onclick=()=>setMode("prev"); $("mBoth").onclick=()=>setMode("both");
 vid.addEventListener("click",()=>{ vid.controls=!vid.controls; });
 // シーク/読込完了でフレームが確定したら、レンダ結果canvasを即再描画（前フレーム残りを防ぐ）
+// 倍速送り(4x以上=シークステップ)や連続スクラブの間も**止めっぱなしにはしない**。
+// 描き終えてから PREV_MIN_GAP_MS 経ったら、その時のカーソル位置で描き直す
+// ＝更新間隔は 0.5秒＋描画時間。毎フレーム描くのは重く、ゼロ更新は何を見ているか分からない。
+const PREV_MIN_GAP_MS = 500;
+let lastPrevAt = 0;
+function renderPreviewNow(t){ renderResult(t); lastPrevAt = performance.now(); }
 ["seeked","loadeddata"].forEach(ev=>vid.addEventListener(ev,()=>{
-  rcv._key=null; if(D && mode!=="src" && curSpeed()<2) renderResult(curSrcTime()); }));
+  rcv._key=null;
+  if(!(D && mode!=="src")) return;
+  if(curSpeed()>=2 && performance.now()-lastPrevAt < PREV_MIN_GAP_MS) return;  // 倍速中だけ間引く
+  renderPreviewNow(curSrcTime()); }));
 
 // 最小ズーム=スライダ左端。時間固定でなく「全体が表示幅の約半分に収まる」縮尺を動的算出。
 function minPXPS(){ const w=$("tlwrap").clientWidth||900; return Math.max(0.02, 0.5*w/(D.source.duration||1)); }
@@ -206,7 +215,9 @@ function minPXPS(){ const w=$("tlwrap").clientWidth||900; return Math.max(0.02, 
 // 左半分を「最小〜既定」、右半分を「既定〜最大」に等比で割り当てる。
 // 線形だと長尺動画で最小倍率が極小になり、既定位置がバーの左1割に寄って
 // 縮小側がほとんど操作できなくなるため（縮小・拡大とも半分ずつの操作量を確保）。
-const ZOOM_DEF = 7, ZOOM_MAX = 60, ZPOS = 1000;
+// 最大倍率は**1フレームを掴める**ところまで（25fps で 1F=24px）。60px/s では
+// 1F が 2.4px しかなく、フレーム単位の詰めができなかった。
+const ZOOM_DEF = 7, ZOOM_MAX = 600, ZPOS = 1000;
 function zoomBounds(){
   const mn = minPXPS(), mx = ZOOM_MAX;
   return { mn, mx, def: clamp(ZOOM_DEF, mn*1.01, mx*0.99) };  // def は必ず mn<def<mx
@@ -227,7 +238,7 @@ $("zoom").oninput=()=>{ PXPS=pxpsFromPos(+$("zoom").value); applyZoom(); };
 
 function buildTimeline(){
   $("tl").style.width = (t2x(D.source.duration)+60)+"px";
-  let rh=""; const step = PXPS<4?60:PXPS<10?30:10;
+  let rh=""; const step = PXPS<4?60:PXPS<10?30:PXPS<60?10:PXPS<150?5:1;
   for(let s=0;s<=D.source.duration;s+=step) rh+=`<span class="tick" style="left:${54+t2x(s)}px">${fmt(s)}</span>`;
   $("ruler").innerHTML = rh;
   const selc=(k,i)=> (selKind===k&&selIdx===i)?" sel":"";
@@ -341,8 +352,21 @@ function makeDraggable(el, {edges, onClick, onCommit, bodyDrag=true, primaryPoin
 }
 
 // ── 編集（即保存＋Undo/Redo） ──
-async function rawPost(url, body){ await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); }
-async function editOp(url, undoBody, redoBody){ await rawPost(url, redoBody); undoStack.push({url,undoBody,redoBody}); redoStack=[]; await load(); }
+// 🚨 保存の失敗を**握り潰さない**。以前は fetch の結果を見ずに「● 保存」と出していたので、
+//    サーバが 400/422 を返しても画面上は保存できたように見えた。
+async function rawPost(url, body){
+  try{
+    const r = await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(r.ok) return true;
+    const m = await r.json().catch(()=>({}));
+    flashMsg("保存できません: " + (m.detail || ("HTTP "+r.status)));
+  }catch(e){ flashMsg("保存できません: " + e.message); }
+  return false;
+}
+async function editOp(url, undoBody, redoBody){
+  if(!await rawPost(url, redoBody)) return;      // 失敗したものは履歴に積まない
+  undoStack.push({url,undoBody,redoBody}); redoStack=[]; await load();
+}
 // op は {url,undoBody,redoBody}（POST差し戻し）か {undo:fn,redo:fn}（任意操作）。
 async function undo(){ const op=undoStack.pop(); if(!op)return; redoStack.push(op);
   if(op.undo) await op.undo(); else await rawPost(op.url, op.undoBody); await load(); reselect(); }
@@ -391,6 +415,21 @@ async function deleteOverlay(idx){
   }); redoStack=[]; }
   if(selKind==="ov"&&selIdx===idx){ selKind=null; selIdx=null; $("side").innerHTML="<h3>選択なし</h3>"; }
   await load();
+}
+// 字幕を1枚削除（Ctrl+Z で復元）。overlay の削除と同じ作り。
+async function deleteSub(idx){
+  const r = await fetch(`/api/subtitle/${idx}`,{method:"DELETE"});
+  if(!r.ok){ const m=await r.json().catch(()=>({})); flashMsg("削除できません: "+(m.detail||("HTTP "+r.status))); return; }
+  const snap = (await r.json()).subtitle;
+  if(snap){ undoStack.push({
+    undo: async()=>{ await rawPost("/api/subtitle", snap); },
+    redo: async()=>{ const fresh = await (await fetch("/api/timeline")).json();
+                     const i = fresh.subtitles.findIndex(x=>Math.abs(x.source_start-snap.start)<1e-6 && x.text===snap.text);
+                     if(i>=0) await fetch(`/api/subtitle/${i}`,{method:"DELETE"}); },
+  }); redoStack=[]; }
+  if(selKind==="sub" && selIdx===idx){ selKind=null; selIdx=null; $("side").innerHTML="<h3>選択なし</h3>"; }
+  await load();
+  flashMsg("字幕を削除しました（Ctrl+Z で復元）");
 }
 function reselect(){ if(selKind==="sub")selectSub(selIdx); else if(selKind==="fr")selectFraming(selIdx); else if(selKind==="ch")selectChapter(selIdx); else if(selKind==="pu")selectPostUnit(selIdx); else if(selKind==="ov")selectOverlay(selIdx); }
 $("uBtn").onclick=undo; $("rBtn").onclick=redo;
@@ -570,24 +609,66 @@ function attachOverlayDrag(el, idx){
     document.addEventListener("mousemove",mm); document.addEventListener("mouseup",mu); });
 }
 
+// 🚨 デバウンスのタイマーは **url+field ごと**に持つ。1本のグローバルタイマーだと、
+//    章タイトルを打った直後にセクション欄を触るだけで clearTimeout が走り、
+//    **先に打った方の保存が消えていた**（2026-09-06 ユーザー報告「変更しても保存されない」）。
+const pendingSaves = new Map();   // key = url|field → {timer, run, url, body}
 function liveText(url, field, orig, getVal, localApply){
-  return ()=>{ const v=getVal(); if(localApply) localApply(v); clearTimeout(saveTmr);
-    saveTmr=setTimeout(()=>editOp(url,{[field]:orig},{[field]:v}),350); };
+  const key = url + "|" + field;
+  return ()=>{ const v=getVal(); if(localApply) localApply(v);
+    const prev = pendingSaves.get(key); if(prev) clearTimeout(prev.timer);
+    const body = {[field]: v};
+    const run = ()=>{ pendingSaves.delete(key); editOp(url,{[field]:orig},body); };
+    pendingSaves.set(key, {timer:setTimeout(run,350), run, url, body});
+  };
 }
+// 保留中の保存を**今すぐ**確定する。パネルを差し替える前に必ず通す
+// （入力欄が innerHTML ごと消えても、打った内容が捨てられないように）。
+function flushPendingSaves(){
+  if(!pendingSaves.size) return;
+  const items = [...pendingSaves.values()];
+  pendingSaves.clear();
+  for(const it of items){ clearTimeout(it.timer); it.run(); }
+}
+// タブを閉じる/リロードする瞬間は fetch が間に合わないので sendBeacon で送り切る。
+window.addEventListener("beforeunload", ()=>{
+  for(const it of pendingSaves.values()){
+    clearTimeout(it.timer);
+    try{ navigator.sendBeacon(it.url, new Blob([JSON.stringify(it.body)],{type:"application/json"})); }catch(e){}
+  }
+  pendingSaves.clear();
+});
 
 function selectSub(idx, seek=true){
+  flushPendingSaves();   // 打ちかけの内容を捨てない
   selKind="sub"; selIdx=idx; const s=D.subtitles.find(x=>x.idx===idx); if(!s) return; buildTimeline();
   const speakers=[...new Set([s.speaker,"mossan-hoshi","Taniguchi"].filter(Boolean))];
   const url=`/api/subtitle/${idx}`;
   $("side").innerHTML=`<h3>字幕 #${idx} <span style="color:#778">出力 ${fmt(s.out_start)}–${fmt(s.out_end)}</span> <span class="saved" id="sv"></span></h3>
     <label>本文（入力で即反映・自動保存）</label><input type="text" id="e_text" value="${(s.text||"").replace(/"/g,"&quot;")}">
-    <div class="row"><div style="flex:1"><label>話者</label><select id="e_spk">${speakers.map(x=>`<option ${x===s.speaker?"selected":""}>${x}</option>`).join("")}<option value="">（なし）</option></select></div>
-    <div style="flex:1"><label>色</label><select id="e_col">${["auto","red","purple","blue","green"].map(c=>`<option ${(D.subtitle_speaker_colors[s.speaker]||"auto")===c?"selected":""}>${c}</option>`).join("")}</select></div>
-    <div style="flex:1"><label>style</label><select id="e_sty"><option ${s.style==="main"?"selected":""}>main</option><option ${s.style==="intro"?"selected":""}>intro</option></select></div></div>`;
+    <div class="row"><div style="flex:1"><label>話者</label><select id="e_spk">${speakers.map(x=>`<option ${x===s.speaker?"selected":""}>${x}</option>`).join("")}<option value="" ${!s.speaker?"selected":""}>（なし）</option></select></div>
+    <div style="flex:1"><label>色${s.speaker?`（話者 ${esc(s.speaker)} の全字幕）`:"（話者を選ぶと指定可）"}</label><select id="e_col">${["auto","red","purple","blue","green"].map(c=>`<option ${(D.subtitle_speaker_colors[s.speaker]||"auto")===c?"selected":""}>${c}</option>`).join("")}</select></div>
+    <div style="flex:1"><label>style</label><select id="e_sty"><option ${s.style==="main"?"selected":""}>main</option><option ${s.style==="intro"?"selected":""}>intro</option></select></div></div>
+    <div class="row" style="margin-top:8px"><button class="t" id="e_del" style="color:#f88">この字幕を削除（Del）</button></div>`;
+  $("e_del").onclick=()=>deleteSub(idx);
   $("e_text").oninput=liveText(url,"text",s.text,()=>$("e_text").value,v=>{ s.text=v; const c=document.querySelector(`[data-sub="${idx}"]`); if(c)c.textContent=v; flash(); });
   $("e_spk").onchange=()=>{ editOp(url,{speaker:s.speaker||""},{speaker:$("e_spk").value}); };
   $("e_sty").onchange=()=>{ editOp(url,{style:s.style},{style:$("e_sty").value}); };
-  $("e_col").onchange=()=>{ const old=D.subtitle_speaker_colors[$("e_spk").value]||"auto"; editOp(`/api/speaker-color`,{speaker:$("e_spk").value,color:old},{speaker:$("e_spk").value,color:$("e_col").value}); };
+  // 色は**話者ごと**の設定なので、話者が無い字幕では変えられない
+  //（以前は speaker="" のキーに色が入り、どの字幕にも効かないゴミが EDL に残った）。
+  $("e_col").disabled = !$("e_spk").value;
+  // 変えた結果を必ず言葉で返す。auto の自動色と選んだ色がたまたま同じだと画面は1ドットも
+  // 変わらないので、黙っていると「保存されていない」と受け取られる（2026-09-06 指摘）。
+  $("e_col").onchange=async()=>{ const spk=$("e_spk").value;
+    if(!spk){ flashMsg("先に話者を選んでください（色は話者ごとの設定）"); return; }
+    const old=D.subtitle_speaker_colors[spk]||"auto", nv=$("e_col").value;
+    const n=D.subtitles.filter(x=>x.speaker===spk).length;
+    const cssBefore=(D.subtitles.find(x=>x.speaker===spk)||{}).css_color;
+    await editOp(`/api/speaker-color`,{speaker:spk,color:old},{speaker:spk,color:nv});
+    const cssAfter=(D.subtitles.find(x=>x.speaker===spk)||{}).css_color;
+    flashMsg(cssBefore===cssAfter
+      ? `${spk} の字幕${n}枚を ${old}→${nv} に保存（表示色は ${cssAfter} のままで変わりません）`
+      : `${spk} の字幕${n}枚を ${nv} に変更（${cssBefore} → ${cssAfter}）`); };
   if(seek) seekSrc(s.source_start);
 }
 // 字幕と同じ4色パレット（見本ボタン用のCSS色）
@@ -610,6 +691,7 @@ function startVideoPick(apply){
 
 // 最上位レイヤーのオーバーレイを選択して編集（文字色/サイズ/フォント/二重縁取り/位置/尺）
 function selectOverlay(idx, seek=true){
+  flushPendingSaves();   // 打ちかけの内容を捨てない
   selKind="ov"; selIdx=idx; const o=(D.overlays||[])[idx]; if(!o) return; buildTimeline();
   const url=`/api/overlay/${idx}`;
   const FONTS=["Meiryo","Yu Gothic UI","MS Gothic","Yu Mincho","BIZ UDPGothic","Arial","Impact"];
@@ -693,6 +775,7 @@ function selectOverlay(idx, seek=true){
   if(seek) seekSrc(o.source_start);
 }
 function selectFraming(idx, seek=true){
+  flushPendingSaves();   // 打ちかけの内容を捨てない
   selKind="fr"; selIdx=idx; const f=D.framing[idx]; if(!f) return; buildTimeline();
   const url=`/api/framing/${idx}`;
   const cropInfo = f.bbox ? `crop (x${f.bbox[0]} y${f.bbox[1]} ${f.bbox[2]}×${f.bbox[3]})` : "全画面（crop無し）";
@@ -711,6 +794,7 @@ function selectFraming(idx, seek=true){
   if(seek) seekSrc(f.start);
 }
 function selectChapter(idx, seek=true){
+  flushPendingSaves();   // 打ちかけの内容を捨てない
   selKind="ch"; selIdx=idx; const c=D.chapters[idx]; if(!c) return; buildTimeline();
   const url=`/api/chapter/${idx}`;
   $("side").innerHTML=`<h3>章 #${idx} <span style="color:#778">開始 ${fmt(c.start_at)}</span> <span class="saved" id="sv"></span></h3>
@@ -723,6 +807,7 @@ function selectChapter(idx, seek=true){
   if(seek) seekSrc(c.start_at);
 }
 function selectPostUnit(idx, seek=true){
+  flushPendingSaves();   // 打ちかけの内容を捨てない
   selKind="pu"; selIdx=idx; const p=(D.post_units||[])[idx]; if(!p) return; buildTimeline();
   $("side").innerHTML=`<h3>投稿単位 #${idx} <span style="color:#778">${fmt(p.start)}–${fmt(p.end)} ・ ${p.n_ranges}区間 ・ 章${p.chapter_ids.length}</span> <span class="saved" id="sv"></span></h3>
     <label>投稿タイトル（この単位が1本の動画に）</label><input type="text" id="p_title" value="${(p.title||"").replace(/"/g,"&quot;")}">
@@ -1061,7 +1146,13 @@ async function mergeSelected(dir){
     if(kind==="sub") selectSub(d.idx); else selectFraming(d.idx);
   } finally { busyMerge=false; }
 }
-function flashMsg(t){ const e=$("sv"); if(e){ e.textContent=t; clearTimeout(e._t); e._t=setTimeout(()=>e.textContent="",1500); } }
+// 通知はサイドパネル(sv)と**ヘッダのトースト**の両方へ。パネル未選択のときに
+// 保存エラーが誰にも見えないと、失敗したことに気づけない。
+function flashMsg(t){
+  const e=$("sv"); if(e){ e.textContent=t; clearTimeout(e._t); e._t=setTimeout(()=>e.textContent="",1500); }
+  const g=$("toast"); if(g){ g.textContent=t; g.style.display=""; clearTimeout(g._t);
+    g._t=setTimeout(()=>{ g.textContent=""; g.style.display="none"; },4000); }
+}
 
 window.addEventListener("keydown",e=>{
   const k=e.key.toLowerCase(), inField=(e.target.tagName==="INPUT"||e.target.tagName==="SELECT"||e.target.tagName==="TEXTAREA");
@@ -1074,19 +1165,22 @@ window.addEventListener("keydown",e=>{
   if((e.ctrlKey||e.metaKey) && k==="v"){ if(ovCopyBuf){ e.preventDefault(); pasteOverlay(); } return; }
   if((e.ctrlKey||e.metaKey) && (k==="arrowleft"||k==="arrowright")){ e.preventDefault(); if(!e.repeat) selectNeighbor(k==="arrowleft"?-1:1); return; }
   if(e.altKey && (k==="arrowleft"||k==="arrowright")){ e.preventDefault(); if(!e.repeat) mergeSelected(k==="arrowleft"?-1:1); return; }  // 自動リピート無視
-  if(["j","k","l","i","o"," ","arrowleft","arrowright","arrowup","arrowdown","+","-","="].includes(k)) e.preventDefault();
+  if(["j","k","l","i","o"," ","arrowleft","arrowright","arrowup","arrowdown","+","-","=","m","."].includes(k)) e.preventDefault();
   if(k==="k") pauseAll(); else if(k==="l") playFwd(); else if(k==="j") playRev();
   else if(k===" ") togglePlay();
   else if(k==="arrowleft") frameStep(-1); else if(k==="arrowright") frameStep(1);
   else if(k==="arrowup") jumpEdit(-1); else if(k==="arrowdown") jumpEdit(1);
   else if(k==="+"||k==="=") setZoom(1.4); else if(k==="-") setZoom(1/1.4);
+  // M/. ＝ 2/3倍・3/2倍のズーム（キーの並びどおり左が縮小・右が拡大）。
+  else if(k==="m") setZoom(2/3); else if(k===".") setZoom(3/2);
   else if(k==="n"){ $("snapBtn").click(); }
   else if(k==="b"){ splitAt(); }
   else if(k==="i"){ inP=curSrcTime(); $("inmark").style.display=""; $("inmark").style.left=(54+t2x(inP))+"px"; }
   else if(k==="o"){ outP=curSrcTime(); $("outmark").style.display=""; $("outmark").style.left=(54+t2x(outP))+"px"; }
   else if(k==="delete"||k==="backspace"){ e.preventDefault();
-    if(selKind==="ov") deleteOverlay(selIdx);  // 重ね選択中＝その重ねを削除（Ctrl+Zで復元）
-    else cutRange(); }                         // それ以外＝In/Out範囲を非破壊カット
+    if(selKind==="ov") deleteOverlay(selIdx);                        // 重ね選択中＝その重ねを削除
+    else if(selKind==="sub" && inP==null && outP==null) deleteSub(selIdx);  // 字幕選択中＝その字幕を削除
+    else cutRange(); }                         // In/Out があれば範囲カット（どちらもCtrl+Zで復元）
 });
 load().then(()=>{ syncZoomRange(); $("zoom").value=posFromPxps(PXPS); $("zlbl").textContent=PXPS.toFixed(2)+"px/s";
   setMode("both"); });  // 既定=両方表示（レンダ結果は動的合成で常時利用可）
