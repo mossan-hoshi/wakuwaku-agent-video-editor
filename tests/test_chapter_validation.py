@@ -76,3 +76,31 @@ def test_label_separator_variants_are_stripped():
     """``MM:SS ラベル``（ハイフン無し・ユーザーが Studio で直した形）も読む。"""
     got = parse_timestamps("00:00 start\n00:21 章A\n03:09 章B\n")
     assert got == [(0, "start"), (21, "章A"), (189, "章B")]
+
+
+def test_too_long_description_is_a_problem():
+    """**概要欄の5,000字上限**。章を細かく刻むと本文より先にここへ当たる。
+
+    由来: 2026-09-09、400話者の動画に1人1章を付けようとしたら章行だけで 6,876字になり、
+    本文を1字も書かずに上限を超えた。条件（00:00/3個以上/昇順/10秒以上）は全部満たすので、
+    ここで見ないと**投稿時まで気づけない**。
+    """
+    from wwedit.publish.description import MAX_DESCRIPTION_CHARS
+
+    head = "Agenda「テーマ」\n\n#タグ\n\n00:00 - start\n"
+    # 20秒間隔＝10秒条件は満たす章を並べる（引っかかるのは長さだけ、という状況を作る）
+    lines = [f"{t // 60:02d}:{t % 60:02d} - 章{t}" for t in range(20, 20 * 30, 20)]
+    text = head + "\n".join(lines) + "\n"
+    assert chapter_problems(text) == []          # まだ短い
+
+    text_long = text + "あ" * MAX_DESCRIPTION_CHARS
+    problems = chapter_problems(text_long)
+    assert any("上限" in p and "字ぶん減らす" in p for p in problems)
+
+
+def test_length_check_counts_japanese_as_one_char():
+    from wwedit.publish.description import MAX_DESCRIPTION_CHARS
+
+    just_under = "あ" * (MAX_DESCRIPTION_CHARS - len(VALID))
+    assert chapter_problems(VALID + just_under) == []
+    assert any("上限" in p for p in chapter_problems(VALID + just_under + "あ"))
