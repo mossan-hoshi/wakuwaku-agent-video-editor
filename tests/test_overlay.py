@@ -264,11 +264,37 @@ def test_mosaic_is_below_text_ui_layers(monkeypatch, tmp_path):
         monkeypatch, tmp_path,
         subtitles=True, chapter_ribbon=True, ribbon_date="7/23収録", overlays=True)
     s = seen["script"]
-    order = [s.index(m) for m in ("[ovo0]", "[mout0]", "ass=subs.ass", "[outvr]",
-                                  "ass=overlays.ass")]
-    # 画像 → モザイク → 字幕 → リボン → テキスト重ね の順に積まれている
+    # モザイクは **concat より前**（ピース内）＝以降の字幕/リボン/文字は当然ぼけない
+    order = [s.index(m) for m in ("[sm0x0]", "concat=", "[ovo0]", "ass=subs.ass",
+                                  "[outvr]", "ass=overlays.ass")]
     assert order == sorted(order), s
     assert seen["vmap"] == "[outvo]"  # 最終出力はテキスト重ねの後
+
+
+def test_mosaic_is_burned_in_source_coords_before_crop(monkeypatch, tmp_path):
+    """🚨 モザイクは **crop の前・ソース座標**で焼く（出力秒の enable は使わない）。
+
+    2026-08-07 実害: 出力秒で ``enable`` を切っていたため、trim→concat のフレーム丸め
+    ドリフト（実測 4フレーム）で**切り替わり直前の数フレームだけモザイクが外れ**、
+    隠していた顔が出た。ソース座標で焼けばドリフトの影響を受けない。
+    """
+    s = _capture_filter_script(
+        monkeypatch, tmp_path, subtitles=False, overlays=True)["script"]
+    piece = s[s.index("[t0]"):s.index("concat=")]
+    # ソース基準 (0.2,0.2,0.3,0.3) × 1920×1080 の矩形をそのまま切る
+    assert "crop=576:324:384:216" in piece, piece
+    # 出力タイムライン秒での enable が残っていないこと（あるとまたずれる）
+    assert "[mout0]" not in s
+
+    # framed（crop あり）でも、モザイクは crop より前に入る
+    from wwedit.compose.ffmpeg_compose import build_filter_script_framed
+    from wwedit.edl.schema import FramingRegion
+    edl = _layer_edl()
+    edl.framing = [FramingRegion(start=0.0, end=60.0, bbox=(100, 100, 800, 450))]
+    fs = build_filter_script_framed(
+        edl, [TimeRange(start=0.0, end=60.0)],
+        mosaics=[o for o in edl.overlays if o.kind == "mosaic"])
+    assert fs.index("[sm0x0]") < fs.index("crop=800:450:100:100"), fs
 
 
 def test_layers_still_chain_without_overlays(monkeypatch, tmp_path):
@@ -323,12 +349,19 @@ def test_place_overlays_drops_offscreen_after_crop():
 
 
 def test_place_overlays_splits_per_crop_segment():
-    """crop が変わる区間をまたぐ重ねは、区間ごとに別の配置へ分割される。"""
+    """crop が変わる区間をまたぐ重ねは、区間ごとに別の配置へ分割される。
+
+    区間の端は `EDGE_PAD_S` だけ広げる（境界のフレームがどちらの `enable` にも
+    入らず、**モザイクが1フレームだけ外れて顔が見えた**実害があったため）。
+    """
+    from wwedit.compose.overlay import EDGE_PAD_S as P
+
     segs = [(0.0, 5.0, None), (5.0, 10.0, (480, 270, 960, 540))]
     got = place_overlays([_ov(start=0.0, end=10.0, x=0.5, y=0.5)], segs,
                          src_w=1920, src_h=1080)
     assert len(got) == 2
-    assert [(p.start, p.end) for p in got] == [(0.0, 5.0), (5.0, 10.0)]
+    assert [(p.start, p.end) for p in got] == [(-P, 5.0 + P), (5.0 - P, 10.0 + P)]
+    assert got[0].end > got[1].start, "境界のフレームは必ずどちらかが覆う"
     assert got[0].mag == 1.0 and got[1].mag == 2.0
 
 

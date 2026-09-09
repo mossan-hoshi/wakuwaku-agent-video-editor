@@ -104,6 +104,23 @@ def test_speech_spans_out_prefers_voice_clips_over_word_timings():
     assert speech_spans_out(edl, edl.kept_ranges()) == [(40.0, 42.0)]
 
 
+def test_speech_spans_out_maps_warped_clips_through_the_cuts():
+    """ワープ後EDLの ``meta.voice.clips`` は**ソース秒**なので写像を通す。
+
+    ワープ素材は出力タイムラインを焼き固めた1本なので生成直後は両者が一致するが、
+    後からカットを入れると声の位置を見失う（口パクで同じ罠を踏んだ＝2026-08-08）。
+    """
+    edl = _edl(
+        segments=[Segment(id="s0", start=0, end=20),
+                  Segment(id="s1", start=20, end=30, invalid=True),
+                  Segment(id="s2", start=30, end=100)],
+        meta={"voice": {"warped": True,
+                        "clips": [{"speaker": "a", "out_start": 40.0, "out_end": 42.0}]}},
+    )
+    # ソース 40〜42 は 10秒のカット穴の後 → 出力 30〜32
+    assert speech_spans_out(edl, edl.kept_ranges()) == [(30.0, 32.0)]
+
+
 def test_speech_spans_out_falls_back_to_word_spans_with_padding():
     edl = _edl(
         segments=[Segment(id="s0", start=0, end=100)],

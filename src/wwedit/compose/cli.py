@@ -18,8 +18,11 @@ compose_app = typer.Typer(help="合成（EDL→mp4 / EDL→fcpxml）", no_args_i
 def video(
     edl_path: Path = typer.Argument(..., help="対象 EDL（segments が必要）"),
     out: Path = typer.Option(None, help="出力mp4（既定 data/<date>/cut_preview.mp4）"),
-    crf: int = typer.Option(20, help="x264 CRF（小さいほど高画質）"),
-    preset: str = typer.Option("medium", help="x264 preset"),
+    crf: int = typer.Option(20, help="品質（小さいほど高画質。x264=CRF / nvenc=CQ）"),
+    preset: str = typer.Option("medium", help="x264 preset（nvenc では無視される）"),
+    encoder: str = typer.Option(
+        None, help="x264=CPU / nvenc=GPU（既定は環境変数 WWEDIT_ENCODER）。"
+                    "**Qwen3-TTS と同時に走らせない**"),
     audio: str = typer.Option("speakers", help="speakers=話者別整音 / embedded=映像内蔵音声"),
     framed: bool = typer.Option(False, help="EDL.framing の bbox で crop+scale を適用([E]反映)"),
     subtitles: bool = typer.Option(False, help="EDL.subtitles を二重枠で焼き込む([I])"),
@@ -39,8 +42,6 @@ def video(
         -1, help="投稿単位[K]。0始まりのindexでその単位の区間だけ合成（-1=収録まるごと）"),
     eyecatch: bool = typer.Option(
         False, help="[H] 各チャプター冒頭に2秒アイキャッチ(generative art＋キャラの一言)を挿入"),
-    eyecatch_voice: bool = typer.Option(
-        True, help="アイキャッチの音＝のべつべ!キャラの一言(SBV2・章ごとにランダム＋右上に名前)"),
     eyecatch_jingle_dir: Path = typer.Option(
         None, help="音声合成できない時に使う音楽ジングル群（退避用・章ごとに seed で選曲）"),
     chapter_ribbon: bool = typer.Option(
@@ -56,7 +57,11 @@ def video(
     chibi_margin_y: int = typer.Option(-1, help="画面端からの余白Y（-1=EDL既定24）"),
     chibi_left: str = typer.Option("", help="左下に置く話者（EDL.chibi.sides の一時上書き）"),
     chibi_right: str = typer.Option("", help="右下に置く話者（同上）"),
-    chibi_mouth_step: float = typer.Option(0.0, help="口形1段の秒数（0=既定0.045）"),
+    chibi_mouth_step: float = typer.Option(0.0, help="口形1段の秒数（0=既定0.083）"),
+    chibi_fx: bool = typer.Option(
+        None, "--chibi-fx/--no-chibi-fx",
+        help="[E] 感情が切り替わった瞬間にちびの脇へ漫符を出す（無課金・PIL描画）。"
+             "未指定は EDL.chibi.fx_enabled に従う"),
     infographic: bool = typer.Option(
         None, "--infographic/--no-infographic",
         help="[I] 本編冒頭に要約インフォグラフィックを表示。"
@@ -165,16 +170,15 @@ def video(
                      chibi_margin_y if chibi_margin_y >= 0 else base_m[1])
 
     # [I] 要約インフォグラフィック: 未指定(None)は EDL.infographic.enabled に従う。
-    # **投稿単位が2本目以降のときは出さない**（図解は収録1本ぶんの要約なので冒頭だけ）。
+    # **投稿単位ごとに専用の図解**があればそれを使う（前後半で話題が違うので使い回さない）。
+    units = edl.post_units or []
+    if 0 <= post_unit_index < len(units) and units[post_unit_index].infographic:
+        edl.infographic = units[post_unit_index].infographic  # このレンダ限り（保存しない）
     ig_on = (infographic if infographic is not None
              else bool(edl.infographic and edl.infographic.enabled))
-    if ig_on:
-        if not (edl.infographic and edl.infographic.path):
-            raise typer.BadParameter(
-                "infographic には画像が要る（先に publish infographic を実行）")
-        if post_unit_index > 0:
-            rprint("[yellow]投稿単位2本目以降なので図解は出さない[/]")
-            ig_on = False
+    if ig_on and not (edl.infographic and edl.infographic.path):
+        raise typer.BadParameter(
+            "infographic には画像が要る（先に publish infographic を実行）")
     if ig_on and infographic_seconds > 0:
         edl.infographic.duration_s = infographic_seconds  # このレンダ限り（保存しない）
 
@@ -188,12 +192,13 @@ def video(
                    "（PCシステム音が鳴っている所・--bgm-avoid-desktop）")
 
     result = compose_kept(
-        edl, out_path, crf=crf, preset=preset, audio=audio,
+        edl, out_path, crf=crf, preset=preset, encoder=encoder, audio=audio,
         framed=framed, subtitles=subtitles, bgm=bgm_path, bgm_gain_db=bgm_gain_db,
         bgm_target_lufs=target, bgm_mute_spans=mute_spans, max_ranges=n, ranges=sel_ranges,
         chapter_ribbon=chapter_ribbon, ribbon_date=ribbon_date, overlays=overlays,
         chibi=chibi_on, chibi_height=chibi_height, chibi_margin=ch_margin,
-        chibi_mouth_step=chibi_mouth_step or None, infographic=ig_on,
+        chibi_mouth_step=chibi_mouth_step or None, chibi_fx=chibi_fx,
+        infographic=ig_on,
         data_dir=edl_path.parent,
     )
     size_mb = result.stat().st_size / 1e6
@@ -209,11 +214,11 @@ def video(
             from wwedit.compose.eyecatch_insert import insert_eyecatches
 
             ec_out = result.with_name(result.stem + "_ec.mp4")
-            snd = "キャラの一言(Qwen3-TTS)" if eyecatch_voice else f"ジングル={eyecatch_jingle_dir}"
+            snd = f"ジングル={eyecatch_jingle_dir}" if eyecatch_jingle_dir else "無音"
             rprint(f"[dim]アイキャッチ挿入中（全章冒頭・音={snd}）...[/]")
             try:
                 ec_path, ch_lines = insert_eyecatches(
-                    result, edl, ec_out, ranges=sel_ranges, voice=eyecatch_voice,
+                    result, edl, ec_out, ranges=sel_ranges,
                     jingle_dir=eyecatch_jingle_dir, crf=crf, preset=preset,
                 )
             except (RuntimeError, ValueError) as e:
@@ -234,6 +239,23 @@ def video(
             max_factor=speedup_max_factor, target_gap=speedup_gap,
             refresh=speedup_refresh, crf=crf, preset=preset,
         )
+
+
+def _audio_fingerprint(path: str) -> str:
+    """`desktop_active.json` のキー。**パス名だけでは足りない**。
+
+    ワープ済みPC音声は計画が変わるたび**同じ名前で中身が作り直される**ので、パス名を
+    キーにすると古い測定が残り続ける。2026-08-07 に実害が出た: 書き込み途中の wav を
+    測って「鳴っている区間 0件」がキャッシュされ、以後どれだけ焼き直しても 0件のまま
+    ＝ **方式Bだけデモ音源の上にBGMが乗った**（`--bgm-avoid-desktop` が効かない）。
+    サイズと更新時刻を混ぜて、中身が変わったら測り直させる。
+    """
+    p = Path(path)
+    try:
+        st = p.stat()
+    except OSError:
+        return path
+    return f"{path}|{st.st_size}|{int(st.st_mtime)}"
 
 
 def _desktop_spans(
@@ -263,12 +285,13 @@ def _desktop_spans(
         key = track.path  # 既定は素材そのもの。voice_path（σ版/ワープ版）ではない
         if use_voice_path and track.voice_path:
             key = str(track.voice_path)
-        if key not in cache:
+        cid = _audio_fingerprint(key)
+        if cid not in cache:
             rprint(f"[dim]PC音声の鳴っている区間を計測中: {Path(key).name}[/]")
             sp, info = desktop_active_spans(key)
-            cache[key] = {"spans": [[a, b] for a, b in sp], "info": info}
+            cache[cid] = {"spans": [[a, b] for a, b in sp], "info": info}
             dirty = True
-        ent = cache[key]
+        ent = cache[cid]
         i = ent.get("info", {})
         rprint(f"  {Path(key).name}: 鳴っている区間 {len(ent['spans'])}件 "
                f"({i.get('active_ratio', 0) * 100:.1f}%・"
@@ -362,6 +385,9 @@ def warp(
                   "（超えたらフリーズ）"),
     crf: int = typer.Option(18, help="ワープ素材のCRF（中間素材なので高画質側）"),
     preset: str = typer.Option("veryfast", help="x264 preset"),
+    encoder: str = typer.Option(
+        None, "--encoder",
+        help="x264 / nvenc（既定は環境変数 WWEDIT_ENCODER・未設定なら x264）"),
     refresh: bool = typer.Option(False, help="PC音声の計測キャッシュを作り直す"),
     dry_run: bool = typer.Option(False, help="計画だけ出してレンダしない"),
 ) -> None:
@@ -420,7 +446,7 @@ def warp(
     warped = d / "footage_warped.mp4"
     rprint(f"[dim]映像をワープ中[/] → {warped.name} ...")
     render_warped_footage(edl.source.video_path, pieces, warped,
-                          fps=fps, crf=crf, preset=preset)
+                          fps=fps, crf=crf, preset=preset, encoder=encoder)
     # 2) PC音声（切って詰めるだけ）
     desktop: dict[str, Path] = {}
     for t in edl.source.audio_tracks:
