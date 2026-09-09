@@ -446,6 +446,20 @@ def create_editor_app(edl_path: str | Path, preview_path: str | Path | None = No
         _log({"type": "subtitle_add", "idx": idx, "start": payload.start, "end": payload.end})
         return {"ok": True, "idx": idx}
 
+    @app.delete("/api/subtitle/{idx}")
+    def delete_subtitle(idx: int) -> dict:
+        """字幕を1枚削除する。Undo 用に ``/api/subtitle`` へ再POSTできる形を返す。"""
+        edl = load_edl(edl_path)
+        subs = sorted(edl.subtitles, key=lambda x: x.start)
+        if not (0 <= idx < len(subs)):
+            raise HTTPException(404, f"subtitle {idx} not found")
+        gone = subs[idx]
+        edl.subtitles = [x for x in edl.subtitles if x is not gone]
+        save_edl(edl, edl_path)
+        _log({"type": "subtitle_delete", "idx": idx, "start": gone.start, "text": gone.text})
+        return {"ok": True, "subtitle": {"start": gone.start, "end": gone.end, "text": gone.text,
+                                         "style": gone.style, "speaker": gone.speaker}}
+
     @app.post("/api/subtitle/{idx}/merge")
     def merge_subtitle(idx: int, payload: MergeDir) -> dict:
         """選択字幕を隣接（隙間なく接する）字幕と結合し、内容を隣接側に統一する。"""
@@ -802,6 +816,10 @@ def create_editor_app(edl_path: str | Path, preview_path: str | Path | None = No
 
     @app.post("/api/speaker-color")
     def set_speaker_color(payload: SpeakerColor) -> dict:
+        # 色は**話者ごと**の設定。空の話者を許すと、どの字幕にも効かないゴミが
+        # subtitle_speaker_colors に残る（2026-09-06 に "" キーが実際に入っていた）。
+        if not (payload.speaker or "").strip():
+            raise HTTPException(400, "話者が空です（色は話者ごとの設定）")
         if payload.color != "auto" and resolve_color_key(payload.color) is None:
             raise HTTPException(400, f"未知の色: {payload.color}")
         edl = load_edl(edl_path)

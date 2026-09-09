@@ -551,3 +551,43 @@ def test_paste_creates_independent_copy_with_given_id(tmp_path: Path):
     # 元を削除してもコピーは独立して残る
     c.delete("/api/overlay/0")
     assert [o.id for o in load_edl(edl_path).overlays] == ["pasted01"]
+
+
+def test_speaker_color_rejects_empty_speaker(tmp_path: Path):
+    """話者が空の色設定は 400。空キーはどの字幕にも効かないゴミになる。
+
+    2026-09-06 実害: 話者なしの字幕で色を変えると `subtitle_speaker_colors` に
+    `""` のキーが書かれ、ユーザーには「色を変えても保存されない」ように見えた。
+    """
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    r = c.post("/api/speaker-color", json={"speaker": "", "color": "red"})
+    assert r.status_code == 400
+    assert "" not in (load_edl(edl_path).subtitle_speaker_colors or {})
+
+
+def test_subtitle_delete_and_restore(tmp_path: Path):
+    """字幕を1枚削除でき、返ったペイロードで元どおり復元できる（Undo用）。"""
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    n0 = len(load_edl(edl_path).subtitles)
+    assert n0 >= 1
+    before = c.get("/api/timeline").json()["subtitles"][0]
+    r = c.delete("/api/subtitle/0")
+    assert r.status_code == 200
+    snap = r.json()["subtitle"]
+    assert len(load_edl(edl_path).subtitles) == n0 - 1
+    assert snap["text"] == before["text"]
+    # Undo 相当: 返ったペイロードをそのまま再POST
+    assert c.post("/api/subtitle", json=snap).status_code == 200
+    subs = sorted(load_edl(edl_path).subtitles, key=lambda x: x.start)
+    assert len(subs) == n0 and subs[0].text == before["text"]
+
+
+def test_subtitle_delete_out_of_range(tmp_path: Path):
+    """範囲外の idx は 404（黙って別の字幕を消さない）。"""
+    edl_path = _edl(tmp_path)
+    c = _client(edl_path)
+    n0 = len(load_edl(edl_path).subtitles)
+    assert c.delete("/api/subtitle/999").status_code == 404
+    assert len(load_edl(edl_path).subtitles) == n0
