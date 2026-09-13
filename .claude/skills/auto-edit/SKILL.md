@@ -333,7 +333,9 @@ CLI呼び出し・LLM工程の判断/dispatch・目視QA・尺ループ・継続
    出来上がりに**実在の人名・別の回の話題・事実の誤り**が無いか必ず目視する
    （実測: 入力に無い製品名を描き足す／人名を勝手にフルネーム化する／数値を取り違える）。
    nano banana 2 は日本語タイポが**たまに崩れる**。Pro は使わない方針なので、直すなら引き直し。
-10. `[CLI]` **compose video** `--framed --subtitles --audio speakers --bgm "<G1で選んだジャンル>"` **`--chapter-ribbon`** **`--eyecatch`** **`--speedup`** → 本編mp4（`*_ec_sp.mp4`）。
+10. `[CLI]` **compose video** `--framed --subtitles --audio speakers --bgm "<G1で選んだジャンル>"` **`--chapter-ribbon`** **`--eyecatch`** **`--speedup`** → 本編mp4（`*_ec_sp.mp4` → 音声フェード済み `*_ec_sp_fade.mp4`）。
+   **[S3] 音声フェードは既定ON（`--fades`）**＝本編の頭0.8秒・末尾1.2秒・各チャプターの前後0.35秒（2026-09-13 ユーザー指示）。
+   🚨 フェードは**高速化のあと**に掛かる（先に掛けると高速化で 0.35秒が 0.04秒に潰れる）。投稿に使うのは `*_fade.mp4`。
    **`--bgm-avoid-desktop` は回ごとの判断**（既定OFF）。その回の**PC音声そのものを聴かせる**
    とき（音楽生成の聴き比べ・デモ音の比較など）だけ付けると、鳴っている間だけ BGM が落ちる
    （**前後0.6秒のフェード付き**＝いきなり消さない）。普段は付けない（PC音声の上にも BGM を敷く）。
@@ -385,7 +387,9 @@ CLI呼び出し・LLM工程の判断/dispatch・目視QA・尺ループ・継続
 11. **=== G-文言 課金前の文言審査 ===** イントロ台本（読み＋字幕）・**タイトル（#NN 込み・回数は推測せず確認）**・
     サムネに描く文字を**まとめて提示して承認を取る**。承認後に手順11以降の課金生成へ進む。
 12. **intro-builder スキル**: イントロ生成（服装非重複/尺/QAは intro-builder が判断・**台本は承認済みのものを使う**）。生成物を見せ**自動で次へ**。`publish intro-compose` で仕上げ合成（本編先頭に連結）。
-13. `[CLI]` **[L]**: サムネは **`publish thumbnail --char <キャラ> --model gemini-3.1-flash-lite-image --image-size 1K --prompt "<配色・構図・服装・表情>"`＝nano banana 2 **lite** で生成（立ち姿参照で絵柄/キャラ固定。PIL帯合成は廃止）。
+13. `[CLI]` **[L]**: サムネは **`publish thumbnail --char <キャラ> --model gpt-image-2.5-flare --prompt "<配色・構図・服装・表情>"`＝GPT Image 2.5 Flare で生成**（2026-09-13 ユーザー指示・Runware 経由・キーは `.env` の `RUNWARE_API_KEY`）。
+   🚨 **絵柄参照は `--char` だけで `character_expansion` の `style-<char>-v###.png` が自動で選ばれる**。旧 `web/assets/<char>_a*.webp`（LP用の縮小版）を参照にすると**絵柄が再現されない**（2026-09-13 に霞のサムネとイントロで実害）。
+   🚨 **API を直接叩かず CLI を通す**（`IDENTITY_CONSTRAINT`＝絵柄維持の前置きが抜けて別画風になる）。flare に `--image-size` の意味は無い（1回で本番寸法）。
    🚨 **文字はモデルに描かせない**（prompt に「文字は一切描かない」と明示）。nano banana 2 は大きな日本語見出しを崩すので、**文字はユーザーが後から手で載せる**。文字が無いなら lite で品質差が出ない。
    🚨 **YouTube へのサムネ設定もユーザーが行う**＝こちらは画像を作るところまで。**投稿済み動画の設定を承認なしに変えない**（2026-08-08 に無断で設定して指摘された。カスタムサムネは API で外せない）。
    構図は**キャラを右寄り・左側を大きく空ける**（文字の余白）／背景は**パステルの白系**／表情は**口を開けた笑顔**（**頬の赤らみは明示指定しない**＝赤くなりすぎる）／服装はイントロ同様**毎回変える**（乃亜の「白シャツ＋黒ロングベスト」は使わない）／タイトル・要約を書き `publish description`。**後段パスを使ったら `publish description --chapter-lines-file <最後に出た *_chapters.txt>`** で補正章時刻を反映（アイキャッチのみ=`*_ec_chapters.txt` / 高速化まで=`*_ec_sp_chapters.txt`）。見せて**自動で次へ**。

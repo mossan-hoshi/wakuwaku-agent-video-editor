@@ -31,6 +31,11 @@ from pathlib import Path
 NANO_BANANA_2 = "gemini-3.1-flash-image"             # Nano Banana 2
 NANO_BANANA_2_LITE = "gemini-3.1-flash-lite-image"   # Nano Banana 2 Lite
 
+# GPT Image 2.5 Flare（**Runware 経由**・novtube PR #2078 と同じ実測前提）。
+# Gemini ではないので `generate_image` がプロバイダごと分岐する。日本語の焼き込みが
+# lite より明確に良く、価格は lite 並み。`--model` にこの値を渡すと flare で焼く。
+GPT_IMAGE_25_FLARE = "gpt-image-2.5-flare"
+
 DEFAULT_MODEL = NANO_BANANA_2
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
@@ -83,12 +88,27 @@ def generate_image(
     timeout: int = 180,
     temperature: float | None = None,
     retries: int = 3,
+    reference_roles: list[str] | None = None,
 ) -> bytes:
     """Gemini ネイティブ画像生成で画像バイト列(PNG)を返す。
 
     reference_images: [(mime, bytes), ...] をプロンプト前に参照として渡す（画風/ロゴ一貫性）。
     temperature: 未指定はモデル既定。
+
+    ``model`` が Runware 系（GPT Image 2.5 Flare）ならそちらへ丸ごと委譲する。
+    ここで分岐しておくと、サムネ/キャラ画/図解/ちび の**全経路**が同じ1行で flare を選べる。
     """
+    from wwedit.publish import runware_image
+
+    if runware_image.is_runware_model(model):
+        # flare は寸法が連続で `image_size` を持たない（quality は実測で無視される）。
+        # `temperature` も受け付けないので、渡されていても黙って捨てる。
+        return runware_image.generate_image(
+            prompt, model=model, aspect_ratio=aspect_ratio,
+            reference_images=reference_images, api_key=api_key,
+            timeout=max(timeout, 300), retries=retries,
+            reference_roles=reference_roles,
+        )
     key = api_key or _api_key()
     parts: list[dict] = []
     for mime, data in reference_images or []:

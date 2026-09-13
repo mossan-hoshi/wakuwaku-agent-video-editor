@@ -154,7 +154,7 @@ def thumbnail(
     generate_thumbnail(prompt, out_path, char=char or None, model=model,
                        image_size=image_size,
                        ref_images=list(ref_image) if ref_image else None)
-    rprint(f"[green]サムネ[/]: {out_path}（nano banana 2 一発生成・文字込み）")
+    rprint(f"[green]サムネ[/]: {out_path}（{model} 一発生成）")
 
 
 @publish_app.command()
