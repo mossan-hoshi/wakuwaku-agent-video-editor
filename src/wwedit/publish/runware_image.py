@@ -103,7 +103,8 @@ def _api_key() -> str:
             r = subprocess.run(
                 [gcloud, "secrets", "versions", "access", "latest",
                  f"--secret={_SECRET_NAME}", f"--project={_SECRET_PROJECT}"],
-                capture_output=True, text=True, timeout=60,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=60,
             )
             if r.returncode == 0 and r.stdout.strip():
                 return r.stdout.strip()

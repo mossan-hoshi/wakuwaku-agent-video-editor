@@ -26,7 +26,7 @@ YouTube: [@mossan_hoshi](https://www.youtube.com/@mossan_hoshi)
 | メイン領域/フレーミング | OmniParserでno_crop判定。**crop枠は専用モデル学習済＋CLI反映**（DINOv2部分fine-tune＋aug／収録単位CV mean IoU0.653>床0.617・`framing crop-apply`でEDL書き戻し） |
 | 動き/シーン変化 | **codec符号化サイズ(ffprobe)** が既定（PySceneDetectも選択可） |
 | リップシンク(アニメ・クラウド) | DomoAI（クラウドAPI・未実装） |
-| TTS / 画像生成 / 投稿 | AIVis / nano banana / YouTube Data API（未実装・要キー） |
+| TTS / 画像生成 / 投稿 | Qwen3-TTS / GPT Image 2.5 Flare（Runware） / YouTube Data API |
 
 - 詳細仕様（不変）: 承認済みSDD `~/.claude/plans/plan-sequential-harp.md`
 - **実装の現状・確定判断・実行手順: [`docs/STATUS.md`](docs/STATUS.md)（圧縮/セッション跨ぎの復元はここを見る）**

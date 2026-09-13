@@ -1,7 +1,7 @@
 """[G] イントロ キャラ画像生成（決定的CLI部品）。
 
 のべつべオリジナルキャラの**フルアート `<id>_a*.webp` を参照画像に渡し、絵柄・キャラ同一性を
-維持する制約**を付けて nano banana2 で生成する。格好/シチュ等の創作（季節・服装の非重複）は
+維持する制約**を付けて GPT Image 2.5 Flare で生成する。格好/シチュ等の創作（季節・服装の非重複）は
 呼び出し側（intro-builder スキル＝Claudeの判断・[[intro-generation-log]] 参照）が prompt で渡す。
 chibi/マスコット(`_chibi`)は参照に使わない。
 """
@@ -12,7 +12,7 @@ import glob
 from pathlib import Path
 
 from wwedit.common.env import env_value
-from wwedit.publish.thumbnail import NANO_BANANA_2, generate_image, save_image
+from wwedit.publish.thumbnail import GPT_IMAGE_25_FLARE, generate_image, save_image
 
 # novtube の web/assets（キャラ素材の在処）。`WWEDIT_NOVTUBE_ASSETS` で差し替え可。
 # 他のキー同様 os.environ → .env の順で解決する（生の os.environ だと .env 設定が効かない）。
@@ -51,6 +51,8 @@ FULL_NAME = {
     # mascot.md に本名が載った2名（以前は「記載なし」としてカタカナの表示名で暫定していた）。
     "priya": "プリヤ・シャルマ",
     "kasumi": "久遠 霞",
+    # 2026-09 追加の新キャラ（novtube3 `web/docs/mascot.md` の Nono 節）。
+    "nono": "遠野 のの",
 }
 
 
@@ -99,6 +101,8 @@ EXPRESSION = {
     "souta": "easygoing neutral expression, faint friendly smile",
     "priya": "bright open smile, energetic",
     "kasumi": "gentle calm expression, soft smile",
+    # mascot.md: 明るいが騒がしくない。歯を見せて大口で笑わせない。
+    "nono": "bright natural open-eyed smile, gently cheerful and calm, teeth not showing",
 }
 _DEFAULT_EXPRESSION = "natural neutral expression"
 
@@ -125,6 +129,8 @@ def expression_of(char: str) -> str:
 #
 # よって下見は **`512`**。ドキュメントを信じて `0.5K` に戻さないこと。
 # `gemini-3.1-flash-lite-image` は 1K のみ対応（こちらはドキュメントどおり）。
+# ⚠️ 2026-09-13 以降、画像はすべて GPT Image 2.5 Flare。flare は `image_size` を受け取って捨てる
+#    （1回で本番寸法 1536x864）ので、下見→2K の2段は無い。値は互換のため残している。
 DRAFT_SIZE = "512"
 FINAL_SIZE = "2K"
 
@@ -221,7 +227,7 @@ def generate_character_image(
     situation: str,
     out_path: str | Path,
     *,
-    model: str = NANO_BANANA_2,
+    model: str = GPT_IMAGE_25_FLARE,
     assets_dir: str | Path = DEFAULT_ASSETS,
     framing: str = "",
     ref_images: list[str | Path] | None = None,

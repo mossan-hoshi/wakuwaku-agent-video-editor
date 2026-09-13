@@ -1,80 +1,31 @@
-"""[L] サムネイル生成（nano banana 2 一発生成）。
+"""[L] サムネイル生成（**GPT Image 2.5 Flare** 一発生成）。
 
-**方針（確定）**: サムネは **nano banana 2 で一発生成**する＝キャラ・背景・**日本語タイトル文字まで
-モデルが一括で描く**。キャラ/絵柄は**立ち姿 `<id>_a*.webp` を参照画像**に渡して固定する
-（[[thumbnail-oneshot-nano-banana]]）。nano banana 2 は日本語タイポも崩れにくいので、旧方針の
-「背景だけ生成＋PILで文字を後合成（``compose_banners``/``compose_title_logo``）」は使わない
-（後者は legacy 残置。`parse_emphasis` 等のみ流用可）。APIキーは `.env: GEMINI_API_KEY` のみ。
+🚨 **画像生成はすべて GPT Image 2.5 Flare（Runware 経由）**。nano banana 2 / lite を含む
+Gemini の画像モデルは**二度と使わない**（2026-09-13 ユーザー指示「今後二度とnano banana2で
+作るな。flareに完全に切り替えろ」「全部の画像だ」）。`generate_image` は Gemini 系のモデルIDを
+渡されたら例外にするので、サムネ/キャラ画/図解/ちび のどの経路からも焼けない。
 
-参考移植元: novtube `gemini_image.go`（`:generateContent`・`X-Goog-Api-Key`・
-`responseModalities:["IMAGE"]`・`imageConfig.aspectRatio/imageSize`・base64応答）。
+キャラ/絵柄は参照画像（`style-<char>-v###.png`）で固定する。文字はモデルに描かせず、
+ユーザーが後から手で載せる。旧方針の「背景だけ生成＋PILで文字を後合成
+（``compose_banners``/``compose_title_logo``）」は legacy 残置（`parse_emphasis` 等のみ流用可）。
+APIキーは `.env: RUNWARE_API_KEY`（`runware_image`）。
 """
 
 from __future__ import annotations
 
-import base64
-import json
-import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
-# 画像モデルの**単一の定義場所**。`models.list` の displayName で確認済み（2026-08-06）。
+# 画像モデルの**単一の定義場所**。
 #
-# ⚠️ 名前の対応を取り違えないこと。`gemini-3-pro-image` は **Nano Banana Pro** であって
-#    nano banana 2 ではない。リポジトリ中でこれを「nano banana 2」と書いていたため、
-#    「nano2 で作って」の指示を pro で実行する事故が起きた（2026-08-06）。
-# ⚠️ 使ってよいのは**この2つだけ**（ユーザー指示・2026-08-06）。
-#    - Nano Banana Pro (`gemini-3-pro-image`) は高すぎるので使わない
-#    - 旧 Nano Banana (`gemini-2.5-flash-image`) も使わない
-#    使わないモデルは定数も置かない（置くと既定に紛れ込む）。
-NANO_BANANA_2 = "gemini-3.1-flash-image"             # Nano Banana 2
-NANO_BANANA_2_LITE = "gemini-3.1-flash-lite-image"   # Nano Banana 2 Lite
-
-# GPT Image 2.5 Flare（**Runware 経由**・novtube PR #2078 と同じ実測前提）。
-# Gemini ではないので `generate_image` がプロバイダごと分岐する。日本語の焼き込みが
-# lite より明確に良く、価格は lite 並み。`--model` にこの値を渡すと flare で焼く。
+# 🚨 **使ってよいのは GPT Image 2.5 Flare だけ**（2026-09-13 ユーザー指示「今後二度と
+#    nano banana2で作るな。flareに完全に切り替えろ」「全部の画像だ」）。
+#    以前の既定は nano banana 2 (`gemini-3.1-flash-image`) と同 lite だった。
+#    Gemini の画像モデルは**定数も置かない**（置くと既定に紛れる）。既定値と拒否は
+#    `tests/test_image_models.py` が縛っている。
+# GPT Image 2.5 Flare は **Runware 経由**（novtube PR #2078 と同じ実測前提）。
 GPT_IMAGE_25_FLARE = "gpt-image-2.5-flare"
 
-DEFAULT_MODEL = NANO_BANANA_2
-_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-
-
-#: キーの出所（novtube の生成ハーネスと同じ GCP プロジェクト）。
-_SECRET_PROJECT = "cosmic-talent-450413-f9"
-_SECRET_NAME = "GEMINI_API_KEY"
-
-
-def _api_key() -> str:
-    """``.env`` を優先し、無ければ GCP Secret Manager から取り直す。
-
-    novtube 側の ``fetch_api_key()`` と同じ2段構え（env 優先 → ``gcloud secrets versions
-    access latest``）。``.env`` が未設定・期限切れでも、gcloud にログインしていれば通る。
-    """
-    import shutil
-    import subprocess
-
-    from wwedit.common.env import env_value
-
-    key = env_value(_SECRET_NAME)
-    if key:
-        return key
-    gcloud = shutil.which("gcloud") or shutil.which("gcloud.cmd")
-    if gcloud:
-        try:
-            r = subprocess.run(
-                [gcloud, "secrets", "versions", "access", "latest",
-                 f"--secret={_SECRET_NAME}", f"--project={_SECRET_PROJECT}"],
-                capture_output=True, text=True, timeout=60,
-            )
-            if r.returncode == 0 and r.stdout.strip():
-                return r.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            pass
-    raise RuntimeError(
-        f"{_SECRET_NAME} が .env にも Secret Manager にもありません"
-        f"（gcloud secrets versions access latest --secret={_SECRET_NAME} "
-        f"--project={_SECRET_PROJECT}）")
+DEFAULT_MODEL = GPT_IMAGE_25_FLARE
 
 
 def generate_image(
@@ -90,85 +41,27 @@ def generate_image(
     retries: int = 3,
     reference_roles: list[str] | None = None,
 ) -> bytes:
-    """Gemini ネイティブ画像生成で画像バイト列(PNG)を返す。
+    """画像バイト列(PNG)を返す。**GPT Image 2.5 Flare（Runware）専用**。
 
-    reference_images: [(mime, bytes), ...] をプロンプト前に参照として渡す（画風/ロゴ一貫性）。
-    temperature: 未指定はモデル既定。
+    reference_images: [(mime, bytes), ...] を参照として渡す（絵柄/キャラの一貫性）。
+    ``image_size`` と ``temperature`` は flare に意味が無いので受け取って捨てる
+    （寸法は ``aspect_ratio`` から本番寸法を引く。quality も実測で無視される）。
 
-    ``model`` が Runware 系（GPT Image 2.5 Flare）ならそちらへ丸ごと委譲する。
-    ここで分岐しておくと、サムネ/キャラ画/図解/ちび の**全経路**が同じ1行で flare を選べる。
+    🚨 **flare 以外のモデルIDは例外にする**（nano banana 2 / lite を含む Gemini 系は使用禁止）。
+    サムネ/キャラ画/図解/ちび の全経路がここを通るので、ここで止めれば漏れない。
     """
     from wwedit.publish import runware_image
 
-    if runware_image.is_runware_model(model):
-        # flare は寸法が連続で `image_size` を持たない（quality は実測で無視される）。
-        # `temperature` も受け付けないので、渡されていても黙って捨てる。
-        return runware_image.generate_image(
-            prompt, model=model, aspect_ratio=aspect_ratio,
-            reference_images=reference_images, api_key=api_key,
-            timeout=max(timeout, 300), retries=retries,
-            reference_roles=reference_roles,
-        )
-    key = api_key or _api_key()
-    parts: list[dict] = []
-    for mime, data in reference_images or []:
-        parts.append({"inlineData": {"mimeType": mime,
-                                     "data": base64.standard_b64encode(data).decode()}})
-    parts.append({"text": prompt})
-    body = {
-        "contents": [{"role": "user", "parts": parts}],
-        "generationConfig": {
-            "responseModalities": ["IMAGE"],
-            "imageConfig": {"aspectRatio": aspect_ratio, "imageSize": image_size},
-        },
-    }
-    if temperature is not None:
-        body["generationConfig"]["temperature"] = temperature
-    req = urllib.request.Request(
-        _ENDPOINT.format(model=model),
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "X-Goog-Api-Key": key},
-        method="POST",
+    if not runware_image.is_runware_model(model):
+        raise ValueError(
+            f"画像モデル {model!r} は使えない。画像はすべて {GPT_IMAGE_25_FLARE} で焼く"
+            "（2026-09-13 ユーザー指示: nano banana 2 など Gemini の画像モデルは二度と使わない）")
+    return runware_image.generate_image(
+        prompt, model=model, aspect_ratio=aspect_ratio,
+        reference_images=reference_images, api_key=api_key,
+        timeout=max(timeout, 300), retries=retries,
+        reference_roles=reference_roles,
     )
-    # 一時的な失敗は指数バックオフで数回粘る（novtube 側と同じ流儀）。
-    # 課金は成功した生成にだけ発生するので、接続エラーでバッチ全体を落とす方が損。
-    payload = None
-    delay = 2.0
-    for attempt in range(retries):
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                payload = json.loads(resp.read().decode())
-            break
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-            if attempt == retries - 1:
-                raise
-            time.sleep(delay)
-            delay = min(delay * 2, 30.0)
-    if payload is None:
-        raise RuntimeError("gemini image: 応答が取得できません")
-    if payload.get("error"):
-        raise RuntimeError(f"gemini image error: {payload['error'].get('message')}")
-    said: list[str] = []
-    for cand in payload.get("candidates", []):
-        for part in cand.get("content", {}).get("parts", []):
-            inline = part.get("inlineData")
-            if inline and inline.get("data"):
-                return base64.standard_b64decode(inline["data"])
-            if part.get("text"):
-                said.append(str(part["text"]).strip())
-    # 画像が無いときは**理由を捨てない**。安全フィルタで落ちたのか、モデルが
-    # 「描けない」と文章で返したのか、単なる打ち切りかで打ち手が全く違う。
-    why = [f"finishReason={c.get('finishReason')}"
-           for c in payload.get("candidates", []) if c.get("finishReason")]
-    fb = payload.get("promptFeedback") or {}
-    if fb.get("blockReason"):
-        why.append(f"blockReason={fb['blockReason']}")
-    for r in (fb.get("safetyRatings") or []):
-        if r.get("blocked") or r.get("probability") not in (None, "NEGLIGIBLE", "LOW"):
-            why.append(f"{r.get('category')}={r.get('probability')}")
-    detail = "／".join(why) or "理由の記載なし"
-    text = ("／モデルの返答: " + " ".join(said)[:300]) if said else ""
-    raise RuntimeError(f"gemini image: 応答に画像がありません（{detail}{text}）")
 
 
 def save_image(data: bytes, out_path: str | Path) -> Path:
@@ -183,13 +76,13 @@ def generate_thumbnail(
     out_path: str | Path,
     *,
     char: str | None = "noa",
-    model: str = NANO_BANANA_2,
+    model: str = DEFAULT_MODEL,
     assets_dir: str | Path | None = None,
     aspect_ratio: str = "16:9",
     image_size: str = "2K",
     ref_images: list[str | Path] | None = None,
 ) -> Path:
-    """サムネを **nano banana 2 で一発生成**して保存する（文字・キャラ・背景を一括描画）。
+    """サムネを **GPT Image 2.5 Flare で一発生成**して保存する（キャラ・背景。文字は描かせない）。
 
     ``char`` を指定すると立ち姿 ``<id>_a*.webp`` を参照画像に渡し、絵柄・キャラ同一性を固定する
     （先頭に同一性維持の制約を付与）。``prompt`` には描画したい日本語タイトル・配色・文字サイズ

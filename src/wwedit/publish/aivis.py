@@ -66,5 +66,6 @@ def synth_to_file(
         tmp.unlink(missing_ok=True)
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
-         "default=nw=1:nk=1", str(out_path)], capture_output=True, text=True)
+         "default=nw=1:nk=1", str(out_path)], capture_output=True, text=True,
+        encoding="utf-8", errors="replace")
     return float(out.stdout.strip() or 0.0)

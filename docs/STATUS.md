@@ -21,20 +21,20 @@
 EDL 主要フィールド: `segments / utterances(words付) / chapters / framing / subtitles /
 subtitle_speaker_colors / bgm / post_units`。
 
-### 0.1 画像生成モデル（**ここが唯一の正**・2026-08-06 確定）
+### 0.1 画像生成モデル（**ここが唯一の正**・2026-09-13 に flare へ完全移行）
 
 定義は `src/wwedit/publish/thumbnail.py` に集約する。他モジュールはそこから import する。
 
 | 定数 | モデルID | displayName | 用途 |
 |---|---|---|---|
-| `NANO_BANANA_2` | `gemini-3.1-flash-image` | Nano Banana 2 | 既定。サムネ/図解/イントロ開始フレーム/ちびベース |
-| `NANO_BANANA_2_LITE` | `gemini-3.1-flash-lite-image` | Nano Banana 2 Lite | 数を撃つ工程（ちびの感情×口＝1キャラ12枚） |
-| `GPT_IMAGE_25_FLARE` | `gpt-image-2.5-flare`（Runware AIR `openai:gpt-image@2.5-flare`） | GPT Image 2.5 Flare | **サムネとイントロ開始フレーム**（2026-09-13 ユーザー指示）。`runware_image.py` |
+| `GPT_IMAGE_25_FLARE` | `gpt-image-2.5-flare`（Runware AIR `openai:gpt-image@2.5-flare`） | GPT Image 2.5 Flare | **唯一の既定・唯一の許可**。サムネ/イントロ開始フレーム/図解/ちび（2026-09-13 ユーザー指示「今後二度とnano banana2で作るな」「全部の画像だ」）。`thumbnail.generate_image` が flare 以外を例外で拒否する。`runware_image.py` |
 
 **使わないモデル（ユーザー指示）**
 
 | モデルID | displayName | 理由 |
 |---|---|---|
+| `gemini-3.1-flash-image` | Nano Banana 2 | 2026-09-13 から禁止。定数も削除 |
+| `gemini-3.1-flash-lite-image` | Nano Banana 2 Lite | 同上 |
 | `gemini-3-pro-image` | Nano Banana **Pro** | 高すぎる |
 | `gemini-2.5-flash-image` | Nano Banana（旧） | 使わない |
 
@@ -56,6 +56,7 @@ subtitle_speaker_colors / bgm / post_units`。
 
 ## 0.1 進行中の実走（引き継ぎ書）
 
+- **2026-09-10 収録 / #109 / 1本投稿（✅ 公開済み https://youtu.be/csVnZ3J7qDc）**: `docs/plans/20260913_run_2026-09-10.md`（全画像 flare 化・章の不具合4件・PC音声ノーマライズ・nono 追加・子プロセスの文字コード・イントロの「本日のお題」はここに記録）
 - **2026-09-07 収録 / #108 / 1本投稿**: `docs/plans/20260913_run_2026-09-07.md`
   （いまどこか・残作業・確定文言・この回で決まったこと・未コミットのコード）。
   **再開したら §1「いまどこか」→ §2「残作業」から見る。** 2026-09-13 時点で投稿する動画
@@ -652,7 +653,7 @@ venv/モデルは `DEVNOTES.local.md`（`D:/novtube_tts/qwen3tts_poc/.venv` ＋ 
   **章時刻をイントロ尺ぶん切り捨てシフト**して `final_chapters.txt` を書く。先頭行は 00:00 固定。
   手作業だと章がズレる（#100 は7秒早いまま投稿した）。テスト `tests/test_concat_intro.py`。
 - `publish thumbnail --image-size` を追加。**lite/flash 系は 2K 非対応**なので `1K` を渡す。
-  安く試作するなら `--model gemini-3.1-flash-lite-image --image-size 1K`。
+  （2026-09-13 以降は画像がすべて flare。`--image-size` は意味を持たない）
 
 ### 13.6 読み・課金・構図の確定事項（2026-08-03 ユーザー指摘）
 - **`Suno AI` の読みは「スノー エーアイ」**（「スーヌ」は誤り）。`Lyria`→「リリア」。

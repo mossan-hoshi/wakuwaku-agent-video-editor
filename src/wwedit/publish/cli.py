@@ -129,26 +129,24 @@ def thumbnail(
                   "構図・キャラの表情/ポーズ・背景まで含めて記述。文字もモデルが描く）"),
     char: str = typer.Option("noa", help="参照する立ち姿キャラID（絵柄/キャラ固定）。空で参照なし"),
     model: str = typer.Option(
-        None, help="画像モデル（既定=nano banana 2＝日本語タイポも崩れにくい）"),
+        None, help="画像モデル（既定=GPT Image 2.5 Flare。flare 以外は使えない）"),
     out: Path = typer.Option(None, help="出力PNG（既定 data/<date>/thumbnail.png）"),
     image_size: str = typer.Option(
-        "2K", help="解像度。**lite/flash 系は 2K 非対応なので 1K を渡す**。"
-                   "当たりを取るだけなら 512（下見）"),
+        "2K", help="互換のため残している。flare には意味が無い（1回で本番寸法）"),
     ref_image: list[Path] = typer.Option(
         None, "--ref-image",
         help="参照画像を明示する（複数可）。既定の <id>_a* は縮小版なので、"
              "寄りの構図では <id>_c* 等の高解像度を渡す"),
 ) -> None:
-    """[L] サムネ生成（**nano banana 2 一発生成**）。
+    """[L] サムネ生成（**GPT Image 2.5 Flare 一発生成**）。
 
-    キャラ・背景・**日本語タイトル文字まで一括でモデルが描く**。``--char`` の立ち姿
-    ``<id>_a*.webp`` を参照に絵柄/キャラ同一性を固定。旧来の「背景だけ生成＋PIL帯合成」は廃止。
-
-    安く試すなら ``--model gemini-3.1-flash-lite-image --image-size 1K``（nano banana 2 lite）。
+    ``--char`` の絵柄参照（`style-<char>-v###.png`）で絵柄/キャラ同一性を固定する。
+    文字はモデルに描かせず、ユーザーが後から載せる。旧来の「背景だけ生成＋PIL帯合成」は廃止。
+    🚨 画像はすべて flare（2026-09-13 ユーザー指示）。nano banana 2 には戻さない。
     """
-    from wwedit.publish.thumbnail import NANO_BANANA_2, generate_thumbnail
+    from wwedit.publish.thumbnail import DEFAULT_MODEL, generate_thumbnail
 
-    model = model or NANO_BANANA_2
+    model = model or DEFAULT_MODEL
     out_path = out or (edl_path.parent / "thumbnail.png")
     rprint(f"[dim]サムネ一発生成中（{model}/{image_size}・参照={char or 'なし'}・課金あり）...[/]")
     generate_thumbnail(prompt, out_path, char=char or None, model=model,
@@ -165,10 +163,9 @@ def infographic(
     desc_file: Path = typer.Option(
         None, help="概要欄（既定 <date>/youtube_description.txt。無ければ概要欄なしで生成）"),
     model: str = typer.Option(
-        None, help="画像モデル（既定=nano banana 2。安く試すなら "
-                   "gemini-3.1-flash-lite-image ＋ --image-size 1K）"),
+        None, help="画像モデル（既定=GPT Image 2.5 Flare。flare 以外は使えない）"),
     aspect_ratio: str = typer.Option("21:9", help="生成アスペクト（横長）"),
-    image_size: str = typer.Option("2K", help="解像度。lite/flash 系は 1K を渡す"),
+    image_size: str = typer.Option("2K", help="互換のため残している。flare には意味が無い"),
     out: Path = typer.Option(None, help="出力PNG（既定 data/<date>/infographic.png）"),
     seconds: float = typer.Option(15.0, help="本編冒頭で表示する秒数"),
     post_unit_index: int = typer.Option(
@@ -181,7 +178,7 @@ def infographic(
     """[I] 本編冒頭の**要約インフォグラフィック**を生成し、EDL に表示設定を書く。
 
     入力は**タイトル・チャプター一覧・概要欄・字幕全文**で、それをそのまま
-    nano banana 2 に読ませて図解を1枚描かせる（1-shot・前段LLMなし）。
+    GPT Image 2.5 Flare に読ませて図解を1枚描かせる（1-shot・前段LLMなし）。
     表示は上部UI/ちびキャラ/字幕に被らない安全枠へ contain 収め（compose 側が計算）。
 
     **課金なので1枚勝負**。撮り直しはユーザーが決める（auto-edit の G-I ゲート）。
@@ -212,35 +209,17 @@ def infographic(
     #    「26:16」のような収録全体の時刻が描かれて嘘になる。
     src_edl = edl
     if post_unit_index >= 0:
-        from wwedit.edl.postunit import _src_to_out, post_unit_ranges
+        from wwedit.edl.postunit import post_unit_view
 
-        rs = post_unit_ranges(edl, post_unit_index)
-        if not rs:
-            raise typer.BadParameter(f"投稿単位 {post_unit_index} に区間が無い")
-        frz = tuple(edl.freezes or ())
-
-        lo, hi = rs[0].start, rs[-1].end
-
-        def _inside(t: float) -> bool:
-            return any(r.start - 1e-6 <= t < r.end + 1e-6 for r in rs)
-
-        def _in_unit(t: float) -> bool:
-            # 🚨 章は kept 判定にしない。章の開始時刻は**無音カットで消えた瞬間**に
-            #    載ることがあり（2026-08-24: 10章中2章がそうだった）、kept で絞ると
-            #    図解の章一覧からその章が丸ごと欠ける。章は時間範囲で判定する。
-            #    末尾は排他＝次の単位の先頭章を拾わない。
-            return lo - 1e-6 <= t < hi - 1e-6
-
-        chs = [c for c in sorted(edl.chapters, key=lambda c: c.start_at)
-               if _in_unit(c.start_at)]
-        src_edl = edl.model_copy(update={
-            "chapters": [
-                c.model_copy(update={
-                    "start_at": 0.0 if i == 0 else _src_to_out(rs, c.start_at, frz)})
-                for i, c in enumerate(chs)
-            ],
-            "subtitles": [s for s in edl.subtitles if _inside(s.start)],
-        })
+        # 🚨 章は kept 判定にしない。章の開始時刻は**無音カットで消えた瞬間**に
+        #    載ることがあり（2026-08-24: 10章中2章がそうだった）、kept で絞ると
+        #    図解の章一覧からその章が丸ごと欠ける。概要欄と同じ `post_unit_chapters` を使う
+        #    （冒頭を手で切って1章目が最初の kept より前に来た場合も拾う＝2026-09-10 実害）。
+        # 🚨 章時刻の写し替えは `post_unit_view` に任せる（ここで章だけ写すと二重に写る）。
+        try:
+            src_edl = post_unit_view(edl, post_unit_index)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
 
     # 図解は画像なので、焼かれてしまうと後から消せない。**入口で秘匿語を落とす**
     from wwedit.privacy.masking import load_mask_terms, load_name_replacements
@@ -293,30 +272,21 @@ def _chapters_inside(edl, out_start: float, out_end: float, *,
 
     🚨 投稿単位を指定したら**その単位の時間軸で**測る。収録まるごとの時刻で測ると、
     別の単位の章を「表示中にある」と誤報する（2026-09-08: 後半の図解に前半の章名が出た）。
+
+    🚨 章の選び方と時刻は概要欄と同じ `post_unit_chapters` / `live_chapters` を通す。
+    `[最初の kept, 最後の kept)` で絞ると、冒頭を切ったとき1章目が消えて2章目が 0秒に
+    繰り上がり、表示中の境界を見落とす（2026-09-10）。
     """
-    from wwedit.chapter.detect import source_to_output
+    from wwedit.edl.postunit import live_chapters, post_unit_chapters
 
-    ranges = None
     if post_unit_index >= 0:
-        from wwedit.edl.postunit import post_unit_ranges
-
-        ranges = post_unit_ranges(edl, post_unit_index)
-
-    def _to_out(t: float) -> float:
-        if ranges is None:
-            return source_to_output(edl, t)
-        from wwedit.edl.postunit import _src_to_out
-
-        return _src_to_out(ranges, t, tuple(edl.freezes or ()))
-
-    chapters = sorted(edl.chapters, key=lambda c: c.start_at)
-    if ranges is not None:
-        lo, hi = ranges[0].start, ranges[-1].end
-        chapters = [c for c in chapters if lo - 1e-6 <= c.start_at < hi - 1e-6]
+        ranges, chapters = post_unit_chapters(edl, post_unit_index)
+        frz = tuple(edl.freezes or ())
+    else:
+        ranges, chapters, frz = edl.kept_ranges(), list(edl.chapters), ()
 
     out: list[tuple[float, str]] = []
-    for i, c in enumerate(chapters):
-        ot = 0.0 if i == 0 else _to_out(c.start_at)
+    for i, (ot, c) in enumerate(live_chapters(ranges, chapters, frz)):
         if out_start < ot < out_end:
             out.append((ot, c.chapter_title or f"チャプター{i + 1}"))
     return out
@@ -1115,7 +1085,8 @@ def character_image(
     situation: str = typer.Option(
         ..., help="変える点＝季節/服装/シチュ（英語prompt断片）。重複回避は intro-builder 側"),
     out: Path = typer.Option(..., help="出力 png"),
-    model: str = typer.Option(None, help="画像モデル（既定=nano banana 2）"),
+    model: str = typer.Option(
+        None, help="画像モデル（既定=GPT Image 2.5 Flare。flare 以外は使えない）"),
     framing: str = typer.Option(
         "", help="構図（英語prompt断片・**自由文**）。ショットサイズ/カメラ高さ/体の向き/"
                  "姿勢/画面内の位置など。**直近10本と被らせない**（intro-generation-log）"),
@@ -1125,8 +1096,7 @@ def character_image(
     list_refs: bool = typer.Option(
         False, "--list-refs", help="そのキャラの参照候補をサイズ順に出して終了（無課金）"),
     image_size: str = typer.Option(
-        None, help="解像度。既定は**下見の 0.5K**。当たりが出たら --final で 2K。"
-                   "0.5K/1K/2K/4K（大文字K必須）。lite モデルは 1K のみ"),
+        None, help="互換のため残している。flare には意味が無い（1回で本番寸法 1536x864）"),
     final: bool = typer.Option(
         False, "--final", help="本番解像度(2K)で焼く。**下見で当たりを取ってから使う**"),
     expression: str = typer.Option(
@@ -1138,9 +1108,8 @@ def character_image(
     「どんな服装/シチュ/構図にするか（過去と非重複・季節合わせ）」の創作は**すべて呼び出し側**。
     コード側は破綻回避の下限（口が見える・顔が切れない・3/4より外へ向かない）だけを足す。
 
-    🚨 **2段構え。** 既定は `DRAFT_SIZE`＝0.5K の下見で、構図・服装・背景の当たりを取る。
-    ユーザーが良しとした**同じプロンプトのまま** `--final` を付けて 2K を焼く。
-    いきなり 2K を焼かない（2026-09-09 ユーザー指示）。
+    🚨 画像はすべて GPT Image 2.5 Flare（2026-09-13 ユーザー指示）。flare は1回で本番寸法が出るので
+    下見→2K の2段は無い。`--image-size` / `--final` は互換のため残しているだけ。
     """
     from wwedit.publish.character import (
         DRAFT_SIZE,
@@ -1148,7 +1117,7 @@ def character_image(
         available_character_refs,
         generate_character_image,
     )
-    from wwedit.publish.thumbnail import NANO_BANANA_2
+    from wwedit.publish.thumbnail import DEFAULT_MODEL
 
     if list_refs:
         for r in available_character_refs(char):
@@ -1156,19 +1125,15 @@ def character_image(
         return
 
     size = image_size or (FINAL_SIZE if final else DRAFT_SIZE)
-    mdl = model or NANO_BANANA_2
-    rprint(f"[dim]開始フレーム生成中（{mdl}/{size}"
-           f"{'・**本番**' if size == FINAL_SIZE else '・下見'}・課金あり）...[/]")
+    mdl = model or DEFAULT_MODEL
+    rprint(f"[dim]開始フレーム生成中（{mdl}・課金あり）...[/]")
     p = generate_character_image(
         char, situation, out, model=mdl, framing=framing,
         ref_images=list(ref_image) if ref_image else None, image_size=size,
         expression=expression)
     used = "、".join(Path(x).name for x in ref_image) if ref_image else f"{char}_a*"
-    rprint(f"[green]開始フレーム[/]: {p}（{size}・参照={used}＋同一性維持"
+    rprint(f"[green]開始フレーム[/]: {p}（{mdl}・参照={used}＋同一性維持"
            f"・構図={framing or '指定なし'}）")
-    if size != FINAL_SIZE:
-        rprint("[yellow]これは下見[/]。良ければ**同じ situation/framing のまま** "
-               "`--final` を付けて焼き直すこと")
 
 
 @publish_app.command()
@@ -1194,7 +1159,8 @@ def lipsync(
 
     if seconds <= 0:
         r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                            "-of", "default=nw=1:nk=1", str(audio)], capture_output=True, text=True)
+                            "-of", "default=nw=1:nk=1", str(audio)], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
         seconds = max(1, min(60, math.ceil(float(r.stdout.strip() or 1))))
     if not prompt:
         prompt = f"natural talking expression, {expression_of(char)}"

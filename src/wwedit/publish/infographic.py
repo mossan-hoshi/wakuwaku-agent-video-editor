@@ -1,6 +1,6 @@
 """[I] 本編冒頭に出す**要約インフォグラフィック**（横長1枚）の生成。
 
-**1-shot**: タイトル・チャプター一覧・概要欄・字幕全文をそのまま nano banana 2 に読ませ、
+**1-shot**: タイトル・チャプター一覧・概要欄・字幕全文をそのまま GPT Image 2.5 Flare に読ませ、
 図解を直接描かせる。前段で LLM に構造抽出させたりしない。
 
 これは novtube の実績（`backend/go-service/prompts.yaml: infographic_image_prompt` /
@@ -8,7 +8,7 @@
 中間表現（構造抽出→英語プロンプト）に落とすと**モデルが元々持っている構成力を
 こちらの語彙で切り落とす**ため、版面が痩せて論の骨も外しやすくなる。
 
-**画像に日本語を焼けるモデル限定**（nano banana 2 系）。日本語非対応モデルに本文を直接
+**画像に日本語を焼けるモデル限定**（GPT Image 2.5 Flare）。日本語非対応モデルに本文を直接
 渡すと、それらしい形の非文字だらけのポスターになる（novtube が gemini-2.5-flash-image で実測）。
 
 課金なので**1枚勝負**（[[paid-image-gen-one-shot-only]]）。撮り直しは auto-edit の
@@ -21,7 +21,7 @@ from pathlib import Path
 
 from wwedit.edl.schema import Edl
 from wwedit.privacy.masking import apply_name_replacements
-from wwedit.publish.thumbnail import NANO_BANANA_2 as _NANO_BANANA_2
+from wwedit.publish.thumbnail import GPT_IMAGE_25_FLARE as _GPT_IMAGE_25_FLARE
 
 __all__ = [
     "DEFAULT_MODEL", "SOURCE_MAX_RUNES", "PROMPT_MAX_RUNES", "STYLE_PROMPT",
@@ -29,9 +29,9 @@ __all__ = [
     "build_prompt", "generate_infographic",
 ]
 
-#: nano banana 2（日本語タイポが崩れにくい）。モデルIDの定義は `publish.thumbnail` が正。
-#: ⚠️ 以前ここは `gemini-3-pro-image`（= Nano Banana **Pro**）だった。pro は使わない。
-DEFAULT_MODEL = _NANO_BANANA_2
+#: GPT Image 2.5 Flare。モデルIDの定義は `publish.thumbnail` が正。
+#: 🚨 画像はすべて flare（2026-09-13 ユーザー指示）。nano banana 2 には戻さない。
+DEFAULT_MODEL = _GPT_IMAGE_25_FLARE
 
 #: 図解の対象テキスト上限（文字数）。長すぎると入力トークン課金が効いてくるうえ、
 #: 骨子が薄まる。字幕全文はここで末尾から切られる（タイトル/章/概要欄は先頭にあるので残る）。

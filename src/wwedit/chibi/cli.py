@@ -34,7 +34,7 @@ def base_cmd(
 @chibi_app.command(name="base-gen")
 def base_gen_cmd(
     char: str = typer.Argument(..., help="キャラID"),
-    model: str = typer.Option(None, help="画像モデル（既定=nano banana 2）"),
+    model: str = typer.Option(None, help="画像モデル（既定=GPT Image 2.5 Flare）"),
     yes: bool = typer.Option(False, "--yes", help="承認ゲートをスキップ"),
     force: bool = typer.Option(False, "--force", help="既存ベースを引き直す（明示リテイク）"),
 ) -> None:
@@ -116,7 +116,7 @@ def gen_cmd(
     emotion: str = typer.Argument(
         ..., help="感情（normal/smile/surprised/troubled/angry/thinking）"
     ),
-    model: str = typer.Option(None, help="画像モデル（既定=nano banana 2 lite）"),
+    model: str = typer.Option(None, help="画像モデル（既定=GPT Image 2.5 Flare）"),
     yes: bool = typer.Option(False, "--yes", help="承認ゲートをスキップ（承認済みの時のみ）"),
     force: bool = typer.Option(False, "--force", help="既存を作り直す（1枚勝負の明示リテイク）"),
     redraw_closed: bool = typer.Option(
@@ -169,7 +169,7 @@ def gen_cmd(
 def ensure_cmd(
     edl_path: Path = typer.Argument(..., help="対象 EDL（voice-cast/感情割当 済み）"),
     yes: bool = typer.Option(False, "--yes", help="承認ゲートをスキップ"),
-    model: str = typer.Option(None, help="画像モデル（既定=nano banana 2 lite）"),
+    model: str = typer.Option(None, help="画像モデル（既定=GPT Image 2.5 Flare）"),
 ) -> None:
     """EDLに必要なちびアセット（キャラ×使用感情）の不足分を列挙→承認→一括生成する。"""
     from wwedit.chibi.assets import DEFAULT_CHIBI_MODEL, missing_assets
@@ -220,7 +220,7 @@ def ensure_all_cmd(
     emotions: str = typer.Option("", help="対象感情（カンマ区切り。既定=全6種）"),
     blink: bool = typer.Option(True, "--blink/--no-blink",
                                help="瞬き素材（目つむり1枚/キャラ）も作る"),
-    model: str = typer.Option(None, help="画像モデル（既定=nano banana 2 lite）"),
+    model: str = typer.Option(None, help="画像モデル（既定=GPT Image 2.5 Flare）"),
     yes: bool = typer.Option(False, "--yes", help="承認ゲートをスキップ"),
     force: bool = typer.Option(False, "--force", help="既存も作り直す（要 --backup 検討）"),
     dry_run: bool = typer.Option(False, "--dry-run",
@@ -271,7 +271,7 @@ def ensure_all_cmd(
         rprint(f"[red]ベース画像が無いキャラ[/]: {', '.join(missing_base)}")
     if paid:
         try:
-            from wwedit.publish.thumbnail import _api_key
+            from wwedit.publish.runware_image import _api_key
 
             _api_key()
             rprint("[green]APIキー OK[/]")

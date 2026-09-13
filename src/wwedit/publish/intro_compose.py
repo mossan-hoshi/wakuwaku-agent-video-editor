@@ -23,7 +23,8 @@ _MEIRYO = r"C:\Windows\Fonts\meiryob.ttc"
 def _duration(path: str | Path) -> float:
     r = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
-         "default=nw=1:nk=1", str(path)], capture_output=True, text=True)
+         "default=nw=1:nk=1", str(path)], capture_output=True, text=True,
+        encoding="utf-8", errors="replace")
     return float(r.stdout.strip() or 0.0)
 
 
@@ -203,7 +204,10 @@ def compose_intro(
     cmd += ["-filter_complex", ";".join(fil), "-map", "[vout]", "-map", amap,
             "-t", f"{dur:.3f}", *video_encode_args(None, 20, "veryfast"),
             "-c:a", "aac", str(out_path)]
-    proc = subprocess.run(cmd, cwd=str(work), capture_output=True, text=True)
+    # ffmpeg の stderr は UTF-8（日本語パス・フォント名を含む）。encoding 省略だと Windows は
+    # cp932 で読んで UnicodeDecodeError になり、失敗時のエラー文も取れなくなる。
+    proc = subprocess.run(cmd, cwd=str(work), capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         tail = ffmpeg_error(proc.stderr)
         raise RuntimeError(f"イントロ合成失敗:\n{tail}")
