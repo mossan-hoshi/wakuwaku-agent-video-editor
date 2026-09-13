@@ -19,8 +19,27 @@ from wwedit.publish.thumbnail import NANO_BANANA_2, generate_image, save_image
 DEFAULT_ASSETS = (env_value("WWEDIT_NOVTUBE_ASSETS")
                   or r"C:\Users\sackn\github\novtube\web\assets")
 
+# 🚨 **絵柄参照の正はこちら**（2026-09-13 ユーザー指示）。
+# novtube の character_expansion が出す `style-<char>-v###.png` が**最新のキャラプロフィール**で、
+# 立ち絵の解像度・線・塗りがそろっている。旧 `web/assets/<id>_a*.webp` は LP 用の縮小版
+# （565x1024・顔が縦120px程度）で、**これを参照にすると絵柄が再現されない**
+# （2026-09-13: 霞の開始フレームが別画風になった）。`WWEDIT_CHAR_STYLE_REFS` で差し替え可。
+DEFAULT_STYLE_REFS = (env_value("WWEDIT_CHAR_STYLE_REFS")
+                      or r"C:\Users\sackn\repos2\novtube3\output\character_expansion"
+                         r"\20260911\images")
+
+
+def resolve_style_ref(char: str,
+                      style_dir: str | Path = DEFAULT_STYLE_REFS) -> Path | None:
+    """`style-<char>-v###.png` の**最新版**を返す。無ければ None。
+
+    版は `v001` < `v002` … の辞書順で最後を採る（実際に v003 まである）。
+    """
+    hits = sorted(Path(style_dir).glob(f"style-{char}-v*.png"))
+    return hits[-1] if hits else None
+
 # キャラID→本名フルネーム（novtube `web/docs/mascot.md` の「本名」より）。イントロのキャラ名表示用。
-# priya/kasumi は mascot.md に本名記載が無いため表示名(カタカナ)で暫定。
+# 全9名とも mascot.md §2 に本名の記載がある（2026-09-13 に priya/kasumi を実物に合わせた）。
 FULL_NAME = {
     "noa": "文月 乃亜",
     "tsukasa": "御影 司",
@@ -29,8 +48,9 @@ FULL_NAME = {
     "reika": "御影 怜香",
     "suzu": "御影 すず",
     "souta": "月島 颯太",
-    "priya": "プリヤ",
-    "kasumi": "カスミ",
+    # mascot.md に本名が載った2名（以前は「記載なし」としてカタカナの表示名で暫定していた）。
+    "priya": "プリヤ・シャルマ",
+    "kasumi": "久遠 霞",
 }
 
 
@@ -135,21 +155,28 @@ LIPSYNC_SAFETY = (
 )
 
 
-def resolve_character_ref(char: str, assets_dir: str | Path = DEFAULT_ASSETS) -> Path:
-    """キャラの **フルアート参照** `<char>_a*.webp` を返す（chibi/マスコットは除外）。
+def resolve_character_ref(char: str, assets_dir: str | Path = DEFAULT_ASSETS,
+                          style_dir: str | Path = DEFAULT_STYLE_REFS) -> Path:
+    """キャラの**絵柄参照**を返す。
 
-    ⚠️ ここが返すのは **LP 用に縮小された立ち姿**（実測 565x1024 / 30〜40KB）。
-    顔は縦120px程度しかないので、**引きの構図や情報量の多い背景を頼むと絵柄を再現しきれない**
-    （2026-09-09: 司の開始フレームが「安っぽい水彩」になった）。
-    同じ `assets_dir` に `<char>_c*`（実測 2000〜2500px / 200〜280KB）がある場合は
-    そちらの方が質感の情報が多い。**既定は変えていない**ので、使うときは
-    `--ref-image` / `ref_images=` で明示的に渡すこと（`available_character_refs` で一覧できる）。
+    **`style-<char>-v###.png`（character_expansion の最新プロフィール）を最優先**にする。
+    無いキャラだけ旧 `web/assets/<char>_a*.webp` に落ちる。
+
+    ⚠️ 旧 `<char>_a*` は **LP 用に縮小された立ち姿**（実測 565x1024 / 30〜40KB）で、
+    顔は縦120px程度しかない。**これを参照にすると絵柄が再現されない**
+    （2026-09-09 司が「安っぽい水彩」／2026-09-13 霞が別画風）。
+    `--ref-image` / `ref_images=` で明示的に渡せば上書きできる
+    （候補は `available_character_refs` で一覧）。
     """
+    if (style := resolve_style_ref(char, style_dir)) is not None:
+        return style
     assets = Path(assets_dir)
     hits = [Path(p) for p in glob.glob(str(assets / f"{char}_a*"))
             if "chibi" not in Path(p).name.lower()]
     if not hits:
-        raise FileNotFoundError(f"{char} のフルアート参照(<id>_a*.webp)が無い: {assets}")
+        raise FileNotFoundError(
+            f"{char} の絵柄参照が無い: {style_dir} の style-{char}-v*.png も "
+            f"{assets} の {char}_a*.webp も見つからない")
     return sorted(hits)[0]
 
 
@@ -157,12 +184,14 @@ def available_character_refs(char: str,
                              assets_dir: str | Path = DEFAULT_ASSETS) -> list[Path]:
     """そのキャラの参照候補を**サイズの大きい順**に返す（chibi は除外）。
 
-    `<char>_a*`（立ち姿の縮小版）だけでなく `<char>_c*`（高解像度のバストアップ等）も拾う。
-    どれを使うかは呼び出し側の判断 —— **既定の解決は変えない**。
+    `style-<char>-v###.png`（最新プロフィール）と、旧 `<char>_a*`（立ち姿の縮小版）・
+    `<char>_c*`（高解像度のバストアップ等）をまとめて拾う。
+    どれを使うかは呼び出し側の判断 —— **既定の解決は `resolve_character_ref` が持つ**。
     """
     assets = Path(assets_dir)
     hits = [Path(p) for p in glob.glob(str(assets / f"{char}_*"))
             if "chibi" not in Path(p).name.lower() and Path(p).is_file()]
+    hits += list(Path(DEFAULT_STYLE_REFS).glob(f"style-{char}-v*.png"))
     return sorted(hits, key=lambda p: (-p.stat().st_size, p.name))
 
 
@@ -216,10 +245,17 @@ def generate_character_image(
                 raise FileNotFoundError(f"参照画像が無い: {r}")
     else:
         refs = [resolve_character_ref(char, assets_dir)]
+    # 参照が2枚以上のとき、**1枚目＝キャラ／2枚目以降＝場面の資料**だと明示する。
+    # 言わないとモデルは全部を等しく「描くべき絵」と受け取り、背景資料の人物や画風に
+    # 引きずられる（2026-09-13: 部屋の資料を足したら瞳の色とホクロが落ちた）。
+    roles = (["キャラクターの見本。**この人物・この絵柄をそのまま保つ**"]
+             + ["場面（部屋・背景）の資料。家具と内装だけを写す"] * (len(refs) - 1)
+             ) if len(refs) > 1 else None
     data = generate_image(
         build_prompt(situation, char, framing, expression), model=model,
         aspect_ratio="16:9", image_size=image_size,
         reference_images=[(_mime_of(r), r.read_bytes()) for r in refs],
+        reference_roles=roles,
     )
     return save_image(data, out_path)
 

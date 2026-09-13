@@ -57,12 +57,21 @@ def test_character_ref_and_prompt(tmp_path):
         resolve_character_ref,
     )
 
+    styles = tmp_path / "styles"
+    styles.mkdir()
     (tmp_path / "noa_a-XYZ.webp").write_bytes(b"x")
     (tmp_path / "noa_chibi_normal.webp").write_bytes(b"x")  # chibi=除外
-    ref = resolve_character_ref("noa", tmp_path)
+    # スタイル参照が無いキャラは旧 `<id>_a*` に落ちる
+    ref = resolve_character_ref("noa", tmp_path, styles)
     assert ref.name == "noa_a-XYZ.webp"  # _a を選び chibi は除外
     with pytest.raises(FileNotFoundError):
-        resolve_character_ref("yume", tmp_path)
+        resolve_character_ref("yume", tmp_path, styles)
+    # `style-<char>-v###.png` があれば**そちらが最優先**。版は最新を採る。
+    # （旧 `<id>_a*` は LP 用の縮小版で、参照にすると絵柄が再現されない）
+    (styles / "noa-v001.png").write_bytes(b"x")        # 命名が違うものは拾わない
+    (styles / "style-noa-v001.png").write_bytes(b"x")
+    (styles / "style-noa-v002.png").write_bytes(b"x")
+    assert resolve_character_ref("noa", tmp_path, styles).name == "style-noa-v002.png"
     p = build_prompt("early summer outfit, hydrangea")
     assert p.startswith(IDENTITY_CONSTRAINT)
     assert "early summer outfit, hydrangea" in p

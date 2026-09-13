@@ -22,6 +22,7 @@ import pytest
 ALLOWED = {
     "gemini-3.1-flash-image",        # Nano Banana 2
     "gemini-3.1-flash-lite-image",   # Nano Banana 2 Lite
+    "gpt-image-2.5-flare",           # GPT Image 2.5 Flare（Runware 経由・novtube PR #2078）
 }
 #: 既定に現れたら失敗させるモデル。
 FORBIDDEN = {
@@ -42,7 +43,10 @@ MODULES = [
 def _model_like(v: object) -> str | None:
     """typer の Option/Argument も剥がして、モデルIDらしい文字列だけ返す。"""
     v = getattr(v, "default", v)  # typer.models.OptionInfo → その default
-    if isinstance(v, str) and (v.startswith("gemini-") or v.startswith("imagen-")):
+    # Runware 経由の flare も拾う。拾わないと「既定を縛る」網から漏れる。
+    if isinstance(v, str) and (v.startswith("gemini-") or v.startswith("imagen-")
+                               or v.startswith("gpt-image-")
+                               or v.startswith("openai:gpt-image")):
         return v
     return None
 
