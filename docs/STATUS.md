@@ -2,7 +2,7 @@
 
 このファイルは**実装の現状・確定した設計判断・パイプライン実行手順**を残す唯一の状況ドキュメント。
 コンテキスト圧縮やセッション跨ぎでも、こことコード+テストだけで状態を復元できることを目的とする。
-（最終更新: 2026-07-24）
+（最終更新: 2026-09-13）
 
 **新規収録→投稿の通し手順は §8 RUNBOOK、再現性の正直な現状と穴は §9 監査を見る。**
 
@@ -29,6 +29,7 @@ subtitle_speaker_colors / bgm / post_units`。
 |---|---|---|---|
 | `NANO_BANANA_2` | `gemini-3.1-flash-image` | Nano Banana 2 | 既定。サムネ/図解/イントロ開始フレーム/ちびベース |
 | `NANO_BANANA_2_LITE` | `gemini-3.1-flash-lite-image` | Nano Banana 2 Lite | 数を撃つ工程（ちびの感情×口＝1キャラ12枚） |
+| `GPT_IMAGE_25_FLARE` | `gpt-image-2.5-flare`（Runware AIR `openai:gpt-image@2.5-flare`） | GPT Image 2.5 Flare | **サムネとイントロ開始フレーム**（2026-09-13 ユーザー指示）。`runware_image.py` |
 
 **使わないモデル（ユーザー指示）**
 
@@ -42,10 +43,23 @@ subtitle_speaker_colors / bgm / post_units`。
 課金する事故を起こした（2026-08-06）。使わないモデルは**定数も置かない**（置くと既定に紛れる）。
 既定値は `tests/test_image_models.py` が全モジュールを走査して縛っている。
 
+**GPT Image 2.5 Flare の注意**（2026-09-13・novtube PR #2078 の実測）:
+- キーは `.env` の `RUNWARE_API_KEY`（無ければ Secret Manager）。
+- `negativePrompt` は送らない（400）。`quality` は無視される。寸法を下げても安くならないので
+  **Gemini の「512で下見→2Kで本番」の2段は無い**（1回で本番寸法 16:9=1536x864）。
+- **参照は1枚ずつ送る**（最大16枚）。1枚のシートへ合成すると顔が潰れて別人になる（経路は削除済み）。
+- **キャラの絵柄参照は `character_expansion` の `style-<char>-v###.png` が正**（`resolve_character_ref`
+  が最優先で選ぶ。noa/tsukasa は未提供で旧 `web/assets/<char>_a*` に落ちる）。
+- 🚨 API を直接叩かず `publish thumbnail` / `publish character-image` を通す（`IDENTITY_CONSTRAINT` が抜ける）。
+
 ---
 
 ## 0.1 進行中の実走（引き継ぎ書）
 
+- **2026-09-07 収録 / #108 / 1本投稿**: `docs/plans/20260913_run_2026-09-07.md`
+  （いまどこか・残作業・確定文言・この回で決まったこと・未コミットのコード）。
+  **再開したら §1「いまどこか」→ §2「残作業」から見る。** 2026-09-13 時点で投稿する動画
+  `data/2026-09-07/final.mp4` はユーザー承認済み。残りはサムネ作り直し（flare）→概要欄→G3→投稿。
 - **2026-08-24 収録 / 3本投稿**: `docs/plans/20260908_run_2026-08-24.md`
   （確定文言・投稿単位の区切り・イントロの特殊仕様・400話者耐久動画の全仕様・実測値・残作業）。
   会話が途切れてもこの2つ（プラン と `data/2026-08-24/APPROVAL.md`）を読めば続けられる。
