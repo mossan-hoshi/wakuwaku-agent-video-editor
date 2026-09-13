@@ -78,6 +78,10 @@ def video(
         0.0, help="[S] 揃える間の長さ(秒)。0=実測から自動（発話が連続する所の中央値）"),
     speedup_refresh: bool = typer.Option(
         False, help="[S] PC音声の鳴っている区間を測り直す（キャッシュを捨てる）"),
+    fades: bool = typer.Option(
+        True, help="[S3] 本編の頭と尻・各チャプターの前後で音をフェードさせる"),
+    fade_edge: float = typer.Option(
+        0.35, help="[S3] チャプター前後のフェード長(秒)"),
 ) -> None:
     """EDL の keep区間を連結した mp4 を書き出す（無音カット適用済み）。
 
@@ -233,12 +237,40 @@ def video(
             result, ec_inserted = ec_path, True
 
     if speedup:
-        _apply_speedup(
+        sp = _apply_speedup(
             edl, edl_path, result, eff, sel_ranges,
             ec_inserted=ec_inserted, ch_lines=ch_lines, factor=speedup_factor,
             max_factor=speedup_max_factor, target_gap=speedup_gap,
             refresh=speedup_refresh, crf=crf, preset=preset,
         )
+        if sp:
+            result, ch_lines = sp
+
+    # [S3] フェードは**後段パスの一番最後**。高速化は間を最大8倍に詰めるので、
+    # 先に掛けると 0.35 秒が 0.04 秒へ潰れて聞こえなくなる。
+    if fades:
+        _apply_fades(result, ch_lines, edge=fade_edge)
+
+
+def _apply_fades(src_mp4: Path, ch_lines: list[str], *, edge: float) -> None:
+    """[S3] 本編の頭と尻・各チャプターの前後に音のフェードを掛ける（映像は再エンコードしない）。
+
+    章マーカーは **そのチャプターのアイキャッチ開始時刻**。先頭章(00:00)はアイキャッチが
+    無いので境界としては使わず、本編頭のフェードに任せる。
+    """
+    from wwedit.common.media import probe
+    from wwedit.compose.fades import apply_audio_fades, parse_chapter_seconds
+
+    total = probe(src_mp4).duration_s
+    bounds = [t for t in parse_chapter_seconds(ch_lines) if t > 1e-6]
+    out = src_mp4.with_name(src_mp4.stem + "_fade.mp4")
+    try:
+        p = apply_audio_fades(src_mp4, out, boundaries=bounds, total=total, edge=edge)
+    except (RuntimeError, OSError) as e:
+        rprint(f"[red]音声フェードに失敗[/]: {e}")
+        raise typer.Exit(1) from e
+    rprint(f"[green]音声フェード完了[/]: {p} ({p.stat().st_size / 1e6:.1f}MB・"
+           f"本編の頭と尻＋章境界{len(bounds)}箇所)")
 
 
 def _audio_fingerprint(path: str) -> str:
@@ -321,8 +353,12 @@ def _apply_speedup(
     edl, edl_path: Path, src_mp4: Path, eff, sel_ranges, *,
     ec_inserted: bool, ch_lines: list[str], factor: float, max_factor: float,
     target_gap: float, refresh: bool, crf: int, preset: str,
-) -> None:
-    """[S] 発話の間を一定に揃えた mp4 と、補正済みチャプター行を書き出す。"""
+) -> tuple[Path, list[str]] | None:
+    """[S] 発話の間を一定に揃えた mp4 と、補正済みチャプター行を書き出す。
+
+    返り値は ``(出力mp4, 補正済みチャプター行)``。縮める間が無くて何もしなかったら
+    ``None``（呼び出し側は元の mp4 と章行のまま次のパスへ進む）。
+    """
     from wwedit.common.media import probe
     from wwedit.compose.eyecatch_insert import shifted_chapter_lines
     from wwedit.compose.speedup import (
@@ -342,7 +378,7 @@ def _apply_speedup(
            f"発話ブロック{info['n_blocks']}件 / 速くできない区間{info['n_blocked']}件")
     if not base:
         rprint("[yellow]縮める間がありません（もともと詰まっている）[/]")
-        return
+        return None
     # アイキャッチ挿入後の mp4 に掛けるので、計画も挿入ぶんだけ後ろへ写す（挿入点で分割）
     plan = (shift_plan_by_inserts(base, eyecatch_inserts(edl, sel_ranges))
             if ec_inserted else base)
@@ -351,7 +387,7 @@ def _apply_speedup(
     plan = effective_plan(plan, probe(src_mp4).duration_s, fps=fps)
     if not plan:
         rprint("[yellow]縮める間がありません（フレーム換算で短すぎる）[/]")
-        return
+        return None
     saved = sum((b - a) * (1.0 - 1.0 / f) for a, b, f in plan)
     rprint(f"[dim]高速化中[/]: {len(plan)}区間・倍率 {info['factor_min']:g}〜"
            f"{info['factor_max']:g}倍(中央{info['factor_median']:g}) → 約{saved:.1f}秒短縮 ...")
@@ -371,6 +407,7 @@ def _apply_speedup(
         cl_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         rprint(f"  補正チャプター → {cl_path}（概要欄はこの時刻を使う）")
     rprint(f"[green]高速化完了[/]: {sp_path} ({sp_path.stat().st_size / 1e6:.1f}MB)")
+    return sp_path, lines
 
 
 @compose_app.command()
