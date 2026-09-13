@@ -155,6 +155,17 @@ function out2src(o){ let acc=0; for(const r of D.kept_ranges){ const len=r.end-r
 function inKept(t){ return D.kept_ranges.some(r=>t>=r.start-1e-3 && t<=r.end+1e-3); }
 function nextKeptStart(t){ for(const r of D.kept_ranges){ if(r.start>t-1e-3) return r.start; } return null; }
 function fmt(t){ if(t==null||isNaN(t))return"--:--"; const m=Math.floor(t/60),s=t%60; return `${String(m).padStart(2,"0")}:${s.toFixed(1).padStart(4,"0")}`; }
+// fmt の逆。"12:34.5" / "1:02:03" / "754.5"（秒）を秒へ。読めなければ null（呼び出し側が元の値へ戻す）。
+function parseTime(v){
+  if(typeof v==="number") return isFinite(v)?v:null;
+  const s=String(v==null?"":v).trim().replace(/[：]/g,":");
+  if(!s) return null;
+  if(!/^\d+(:\d{1,2}){0,2}(\.\d+)?$/.test(s)) return null;
+  const p=s.split(":").map(Number);
+  if(p.some(x=>isNaN(x))) return null;
+  const t = p.length===1 ? p[0] : p.length===2 ? p[0]*60+p[1] : p[0]*3600+p[1]*60+p[2];
+  return isFinite(t) ? t : null;
+}
 
 // 二重枠（色文字→白枠→同色外枠）を text-shadow で近似。白を上(内側)、同色を下(外側)に重ねる。
 function dblShadow(color){
@@ -273,9 +284,17 @@ function buildTimeline(){
     primaryPoints:overlayEdgePoints(+el.dataset.ov),   // 他の重ねの端に最優先で吸着
     onClick:()=>selectOverlay(+el.dataset.ov, clickSeek(el)),
     onCommit:(a,b,oa,ob)=>editOp(`/api/overlay/${el.dataset.ov}`,{start:oa,end:ob},{start:a,end:b})}));
-  // 章はクリックでシークしない（点マーカー・始端のみドラッグ）
-  $("tracks").querySelectorAll("[data-ch]").forEach(el=>makeDraggable(el,{edges:false,
-    onClick:()=>selectChapter(+el.dataset.ch, false), onCommit:(a,b,oa)=>editOp(`/api/chapter/${el.dataset.ch}`,{start_at:oa},{start_at:a})}));
+  // 章はクリックでシークしない。境界＝隣の章の start_at なので、
+  //   本体/左端ドラッグ = この章の開始、右端ドラッグ = **次の章の開始**（＝この章の終端）。
+  // 端を掴めないと「境界が動かせない」ので edges:true にしてある（2026-09-12 指摘）。
+  $("tracks").querySelectorAll("[data-ch]").forEach(el=>makeDraggable(el,{edges:true,
+    primaryPoints:chapterEdgePoints(+el.dataset.ch),   // 他の章の開始に最優先で吸着
+    onClick:()=>selectChapter(+el.dataset.ch, false),
+    onCommit:(a,b,oa,ob,zone)=>{ const i=+el.dataset.ch;
+      if(zone==="r"){
+        if(!D.chapters[i+1]){ flashMsg("最後の章の終端は動かせません（次の章がありません）"); return; }
+        editOp(`/api/chapter/${i+1}`,{start_at:ob},{start_at:b});
+      } else editOp(`/api/chapter/${i}`,{start_at:oa},{start_at:a}); }}));
   // 投稿は他項目同様、始端/終端をドラッグで変更可能（本体ドラッグ無し＝選択のみ）
   $("tracks").querySelectorAll("[data-pu]").forEach(el=>makeDraggable(el,{edges:true, bodyDrag:false,
     onClick:()=>selectPostUnit(+el.dataset.pu, clickSeek(el)),
@@ -463,6 +482,12 @@ function snapPoints(self0, self1){
   D.framing.forEach(f=>{ps.add(f.start);ps.add(f.end);});
   D.chapters.forEach(c=>ps.add(c.start_at));
   ps.delete(self0); ps.delete(self1);
+  return [...ps];
+}
+// 章ドラッグの最優先スナップ先＝**自分以外の章の開始**（境界どうしを重ねられるように）。
+function chapterEdgePoints(selfIdx){
+  const ps=new Set();
+  (D.chapters||[]).forEach((c,i)=>{ if(i!==selfIdx) ps.add(c.start_at); });
   return [...ps];
 }
 // 重ねドラッグの最優先スナップ先＝**自分以外の全オーバーレイの端**（start/end）。
@@ -797,10 +822,26 @@ function selectChapter(idx, seek=true){
   flushPendingSaves();   // 打ちかけの内容を捨てない
   selKind="ch"; selIdx=idx; const c=D.chapters[idx]; if(!c) return; buildTimeline();
   const url=`/api/chapter/${idx}`;
-  $("side").innerHTML=`<h3>章 #${idx} <span style="color:#778">開始 ${fmt(c.start_at)}</span> <span class="saved" id="sv"></span></h3>
+  $("side").innerHTML=`<h3>章 #${idx} <span class="saved" id="sv"></span></h3>
+    <label>開始位置（mm:ss.s / h:mm:ss / 秒。Enterで確定）</label>
+    <div class="row"><input type="text" id="c_at" value="${fmt(c.start_at)}" style="flex:1">
+      <button class="t" id="c_now">再生位置へ</button></div>
     <label>章タイトル</label><input type="text" id="c_ct" value="${(c.chapter_title||"").replace(/"/g,"&quot;")}">
     <label>セクション（大見出し）</label><input type="text" id="c_st" value="${(c.section_title||"").replace(/"/g,"&quot;")}">
     <label><input type="checkbox" id="c_req" ${c.is_required?"checked":""}> YouTubeチャプター必須</label>`;
+  // 開始位置は数値でも直せる（タイムラインのドラッグだけだと低倍率で 1px≒0.15秒になり狙えない）。
+  const applyAt=async v=>{ const t=parseTime(v);
+    if(t==null){ flashMsg("時刻が読めません（例 12:34.5 / 1:02:03 / 754.5）"); $("c_at").value=fmt(c.start_at); return; }
+    const nt=clamp(t,0,D.source.duration), was=c.start_at;
+    if(Math.abs(nt-was)<0.001){ $("c_at").value=fmt(was); return; }
+    await editOp(url,{start_at:was},{start_at:nt});
+    // load() 後も D は作り直されるので、手元の c と入力欄を実値へ揃える
+    // （揃えないと次の編集が古い start_at を「変更前」として Undo に積む）。
+    c.start_at=nt; const box=$("c_at"); if(box) box.value=fmt(nt);
+    flashMsg(`章 #${idx} の開始を ${fmt(was)} → ${fmt(nt)} に変更`); };
+  $("c_at").onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); e.target.blur(); } };
+  $("c_at").onchange=()=>applyAt($("c_at").value);
+  $("c_now").onclick=()=>applyAt(curSrcTime());
   $("c_ct").oninput=liveText(url,"chapter_title",c.chapter_title||"",()=>$("c_ct").value,()=>flash());
   $("c_st").oninput=liveText(url,"section_title",c.section_title||"",()=>$("c_st").value,()=>flash());
   $("c_req").onchange=()=>editOp(url,{is_required:c.is_required},{is_required:$("c_req").checked});
