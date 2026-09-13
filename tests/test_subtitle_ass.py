@@ -167,3 +167,15 @@ def test_scheme_from_ass_same_hue_three_tones():
     dark, top, bottom = scheme_from_ass(char_subtitle_color("noa"))
     # 暗→明の3トーン（明度順: dark < bottom < top）
     assert sum(dark) < sum(bottom) < sum(top)
+
+
+def test_nono_intro_subtitle_uses_theme_color_not_default_pink():
+    """nono のイントロ字幕は**テーマ色（アプリコット #DE947A）**。未登録だと既定のピンクに落ちる。
+
+    由来: 2026-09-13。`CHAR_THEME_HEX` にだけ足して `CHARACTER_COLORS` を忘れ、
+    `intro_color_for("nono")` がピンクを返していた。
+    """
+    from wwedit.subtitle.ass import CHAR_THEME_HEX, INTRO_COLOR, hex_to_ass, intro_color_for
+
+    assert intro_color_for("nono") != INTRO_COLOR
+    assert intro_color_for("nono") == hex_to_ass(CHAR_THEME_HEX["nono"])

@@ -16,7 +16,7 @@
 口パクは**中間フレームを作らない**。閉/開の2枚を離散的に切り替える（ゆっくり系の実際の
 作りと同じ）。補間で滑らかに繋ぐと線がボケて「合成っぽさ」が出るため不採用。
 
-画像生成は ``publish.thumbnail.generate_image``（nano banana）を再利用。**課金なので
+画像生成は ``publish.thumbnail.generate_image``（GPT Image 2.5 Flare）を再利用。**課金なので
 承認ゲートは CLI 側**（``chibi gen``/``ensure`` が --yes 無しで確認、既存はエラー、
 リテイクは --force のみ＝[[paid-image-gen-one-shot-only]]）。
 """
@@ -32,7 +32,7 @@ from wwedit.chibi import geometry as _G
 from wwedit.chibi.emotion import CHIBI_EMOTIONS
 from wwedit.common.env import env_value
 from wwedit.publish.character import IDENTITY_CONSTRAINT, expression_of
-from wwedit.publish.thumbnail import NANO_BANANA_2, NANO_BANANA_2_LITE
+from wwedit.publish.thumbnail import GPT_IMAGE_25_FLARE
 
 __all__ = [
     "CHIBI_EMOTIONS", "DEFAULT_CHIBI_MODEL", "BASE_CHIBI_MODEL", "N_MOUTH",
@@ -52,10 +52,10 @@ __all__ = [
 #: 口の状態数（0=閉 / 1=開）。中間フレームは作らない。
 N_MOUTH = 2
 
-#: 感情×口の量産（1キャラ12枚）は lite。
-DEFAULT_CHIBI_MODEL = NANO_BANANA_2_LITE
-#: ベースの描き起こしは**キャラあたり1枚**で全12枚の土台になるので nano2 本体を使う。
-BASE_CHIBI_MODEL = NANO_BANANA_2
+#: 🚨 画像はすべて GPT Image 2.5 Flare（2026-09-13 ユーザー指示）。以前は量産を nano banana 2 lite、
+#: ベースを nano banana 2 にしていたが、どちらも使わない。
+DEFAULT_CHIBI_MODEL = GPT_IMAGE_25_FLARE
+BASE_CHIBI_MODEL = GPT_IMAGE_25_FLARE
 
 _NOVTUBE_DRAWABLE_DEFAULT = (
     r"C:\Users\sackn\repos2\novtube\android\app\src\main\res\drawable"

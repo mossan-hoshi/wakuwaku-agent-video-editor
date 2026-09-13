@@ -37,7 +37,7 @@ _DEFAULTS = {
 
 #: のべつべ！キャラのうち参照音声があるもの（`mossan_hoshi` は実在の人なので除く）。
 QWEN_VOICES = ["noa", "yume", "kasumi", "priya", "reika", "ritsu", "suzu", "tsukasa",
-               "souta"]
+               "souta", "nono"]
 
 
 def _cfg(key: str) -> str:

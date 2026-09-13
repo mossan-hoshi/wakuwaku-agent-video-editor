@@ -62,10 +62,15 @@ def source_to_output(edl: Edl, t: float) -> float:
 
 
 def youtube_chapter_lines(edl: Edl) -> list[str]:
-    """YouTube説明欄用のチャプター行（出力タイムライン・先頭は必ず 00:00）。"""
+    """YouTube説明欄用のチャプター行（出力タイムライン・先頭は必ず 00:00）。
+
+    カットで尺ゼロに潰れた章は出さない（`live_chapters`）。出すと同じ時刻の章が並んで
+    YouTube の章が**全部**表示されなくなる（2026-09-10: 後半を丸ごと切って5章が0秒になった）。
+    """
+    from wwedit.edl.postunit import live_chapters
+
     lines: list[str] = []
-    for i, c in enumerate(sorted(edl.chapters, key=lambda c: c.start_at)):
-        ot = 0.0 if i == 0 else source_to_output(edl, c.start_at)
+    for i, (ot, c) in enumerate(live_chapters(edl.kept_ranges(), edl.chapters)):
         h, rem = divmod(int(ot), 3600)
         m, s = divmod(rem, 60)
         ts = f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"

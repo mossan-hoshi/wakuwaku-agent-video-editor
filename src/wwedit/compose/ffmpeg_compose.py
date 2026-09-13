@@ -49,8 +49,15 @@ LOUDNORM = "loudnorm=I=-16:TP=-1.5:LRA=11"
 DYNNORM = "dynaudnorm=f=500:g=61:m=7:p=0.9"
 
 
+#: PC音声（画面共有で流した音・システム音）を**声より少し下げる**量(dB)。
+#: 声と同じ窓ノーマライズを掛けたうえで下げる（2026-09-13 ユーザー指示「システム音うるさすぎた」
+#: 「話し声と同じようにノーマライズ（話し声よりはやや小さめ）」）。
+DESKTOP_GAIN_DB = -4.0
+
+
 def build_speaker_mix_filter(
-    n: int, *, windowed: bool = True, raw_idx: tuple[int, ...] = ()
+    n: int, *, windowed: bool = True, raw_idx: tuple[int, ...] = (),
+    desktop_idx: tuple[int, ...] = (), desktop_gain_db: float = DESKTOP_GAIN_DB,
 ) -> str:
     """話者 n トラックの整音 filter_complex を作る。
 
@@ -59,22 +66,30 @@ def build_speaker_mix_filter(
     False は従来の全長一括 LOUDNORM のみ（動作確認用）。無音はカットで除外済み・dynaudnorm の
     m 制限で無音の過増幅も抑える。
 
-    ``raw_idx``: **dynaudnorm を掛けない入力**（PC オーディオ＝共有された音楽など）。
-    音楽に窓ノーマライズを掛けると強弱が潰れ、曲間の無音まで持ち上がる。素のまま混ぜ、
-    全体ラウドネスだけ最後に揃える。
+    ``desktop_idx``: **PC音声**（画面共有の音・システム音）。声と**同じ** dynaudnorm を掛け、
+    さらに ``desktop_gain_db`` だけ下げてから混ぜる。
+    🚨 以前は PC音声を素のまま混ぜていた（``raw_idx`` 扱い＝音楽の強弱を残す狙い）が、
+    ピークが声より大きく**システム音がうるさすぎた**（2026-09-13 ユーザー指摘）。
+
+    ``raw_idx``: 何も掛けずに混ぜる入力。本番の経路では使わない（互換のため残す）。
     """
     if n < 1:
         raise ValueError("トラックが無い")
     raw = set(raw_idx)
-    pre = (lambda i: f"[{i}:a]{DYNNORM}[d{i}]") if windowed else None
-    src = (
-        (lambda i: f"[{i}:a]" if i in raw else f"[d{i}]")
-        if windowed
-        else (lambda i: f"[{i}:a]")
-    )
-    lines: list[str] = []
-    if windowed:
-        lines += [pre(i) for i in range(n) if i not in raw]
+    desk = set(desktop_idx)
+    gain = f"volume={desktop_gain_db:.1f}dB"
+
+    def needs_pre(i: int) -> bool:
+        return i not in raw and (windowed or i in desk)
+
+    def pre(i: int) -> str:
+        chain = ([DYNNORM] if windowed else []) + ([gain] if i in desk else [])
+        return f"[{i}:a]{','.join(chain)}[d{i}]"
+
+    def src(i: int) -> str:
+        return f"[d{i}]" if needs_pre(i) else f"[{i}:a]"
+
+    lines: list[str] = [pre(i) for i in range(n) if needs_pre(i)]
     if n == 1:
         lines.append(f"{src(0)}{LOUDNORM}[outa]")
     else:
@@ -539,18 +554,20 @@ def render_speaker_mix(edl: Edl, out_wav: str | Path) -> Path:
     out_wav = Path(out_wav)
     # **PC オーディオ（共有された音楽など）も混ぜる。**文字起こしはしないが、本編で
     # 実際に鳴っていた音なので落とすと内容が欠ける（音楽生成AIの試聴回など）。
-    # ただし窓ノーマライズは掛けない（``raw_idx``）。
+    # 声と同じ窓ノーマライズを掛け、声より少し下げる（``desktop_idx``）。
+    # 🚨 素のまま混ぜるとシステム音が声よりうるさい（2026-09-13 ユーザー指摘）。
     if not [t for t in edl.source.audio_tracks if not t.is_desktop_audio]:
         raise ValueError("話者トラックが無い")
     # [V] キャラ声差し替え済みなら voice_path を使う（None=元の path＝非破壊）
     tracks = [t.voice_path or t.path for t in edl.source.audio_tracks]
-    raw_idx = tuple(i for i, t in enumerate(edl.source.audio_tracks) if t.is_desktop_audio)
+    desktop_idx = tuple(
+        i for i, t in enumerate(edl.source.audio_tracks) if t.is_desktop_audio)
 
     cmd = [ffmpeg_path(), "-y"]
     for p in tracks:
         cmd += ["-i", p]
     n = len(tracks)
-    afilter = build_speaker_mix_filter(n, windowed=True, raw_idx=raw_idx)
+    afilter = build_speaker_mix_filter(n, windowed=True, desktop_idx=desktop_idx)
     cmd += [
         "-filter_complex",
         afilter,
